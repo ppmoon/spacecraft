@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -20,6 +20,7 @@ pub struct TauriPlatform {
 struct TauriPlatformState {
     next_id: u64,
     shortcuts: HashMap<String, Shortcut>,
+    trays: HashMap<String, TrayIcon>,
 }
 
 impl TauriPlatform {
@@ -29,6 +30,7 @@ impl TauriPlatform {
             state: Mutex::new(TauriPlatformState {
                 next_id: 0,
                 shortcuts: HashMap::new(),
+                trays: HashMap::new(),
             }),
         }
     }
@@ -82,7 +84,7 @@ impl Platform for TauriPlatform {
             .expect("tray menu");
 
         let on_quit_menu = Arc::clone(&on_quit);
-        let _tray = TrayIconBuilder::new()
+        let tray = TrayIconBuilder::new()
             .icon(self.app.default_window_icon().expect("app icon").clone())
             .menu(&menu)
             .tooltip("Spacecraft")
@@ -103,11 +105,14 @@ impl Platform for TauriPlatform {
             .build(&self.app)
             .expect("tray");
 
+        let mut state = self.state.lock().expect("tauri platform");
+        state.trays.insert(id.clone(), tray);
         TrayId(id)
     }
 
-    fn destroy_tray(&self, _id: &TrayId) {
-        // Tray icon is tied to app lifetime for Phase 1.01; Host stop still clears state.
+    fn destroy_tray(&self, id: &TrayId) {
+        let mut state = self.state.lock().expect("tauri platform");
+        state.trays.remove(&id.0);
     }
 
     fn create_window(&self, kind: WindowKind) -> WindowId {
