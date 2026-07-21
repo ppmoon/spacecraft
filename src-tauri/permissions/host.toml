@@ -22,3 +22,18 @@ commands.allow = ["list_plugins"]
 identifier = "allow-open-plugin"
 description = "Allow the launcher to open a discovered Plugin window"
 commands.allow = ["open_plugin"]
+
+[[permission]]
+identifier = "allow-bus-emit"
+description = "Allow a Plugin window to emit on the scoped Bus proxy"
+commands.allow = ["bus_emit"]
+
+[[permission]]
+identifier = "allow-bus-call"
+description = "Allow a Plugin window to call on the scoped Bus proxy"
+commands.allow = ["bus_call"]
+
+[[permission]]
+identifier = "allow-bus-subscribe"
+description = "Allow a Plugin window to subscribe via the scoped Bus proxy"
+commands.allow = ["bus_subscribe"]

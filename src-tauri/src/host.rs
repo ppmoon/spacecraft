@@ -1,14 +1,17 @@
-//! Host — tray, launcher, command palette, blank windows, Pure-UI Plugins.
-//! Behaviour is exercised at the Host seam via an injected Platform.
+//! Host — tray, launcher, command palette, Plugins, Sidecar lifecycle, Bus router.
+//! Behaviour is exercised at the Host / Bus seam via an injected Platform.
+//! Window UI never receives a raw Bus — only a scoped `BusProxy`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use serde_json::Value;
 
+use crate::bus::{Bus, BusError, BusProxy};
 use crate::manifest::Manifest;
-use crate::platform::{Platform, TrayId, WindowId, WindowKind};
+use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ListedPlugin {
@@ -19,6 +22,7 @@ pub struct ListedPlugin {
 
 pub struct Host {
     platform: Arc<dyn Platform>,
+    bus: Arc<Bus>,
     inner: Mutex<HostState>,
 }
 
@@ -29,6 +33,8 @@ struct HostState {
     palette: Option<WindowId>,
     blanks: Vec<WindowId>,
     plugin_windows: Vec<(WindowId, WindowKind)>,
+    /// plugin_id → Sidecar process handle
+    sidecars: HashMap<String, SidecarId>,
     plugins: HashMap<String, Manifest>,
     plugins_dir: Option<PathBuf>,
 }
@@ -37,6 +43,7 @@ impl Host {
     pub fn new(platform: Arc<dyn Platform>) -> Self {
         Self {
             platform,
+            bus: Arc::new(Bus::new()),
             inner: Mutex::new(HostState {
                 running: false,
                 tray: None,
@@ -44,6 +51,7 @@ impl Host {
                 palette: None,
                 blanks: Vec::new(),
                 plugin_windows: Vec::new(),
+                sidecars: HashMap::new(),
                 plugins: HashMap::new(),
                 plugins_dir: None,
             }),
@@ -98,6 +106,9 @@ impl Host {
         }
         for (id, _) in state.plugin_windows.drain(..) {
             self.platform.close_window(&id);
+        }
+        for (_, sidecar) in state.sidecars.drain() {
+            self.platform.stop_sidecar(&sidecar);
         }
         if let Some(tray) = state.tray.take() {
             self.platform.destroy_tray(&tray);
@@ -163,22 +174,126 @@ impl Host {
         list
     }
 
+    /// Scoped Bus proxy for a loaded Plugin surface (window UI or test double).
+    /// This is the only Bus entry point — there is no raw global Bus API.
+    pub fn scoped_bus(&self, plugin_id: &str) -> Result<BusProxy, BusError> {
+        let state = self.inner.lock().expect("host");
+        let Some(manifest) = state.plugins.get(plugin_id) else {
+            return Err(BusError::NotLoaded(plugin_id.to_string()));
+        };
+        Ok(self.bus.proxy(
+            manifest.id.clone(),
+            manifest.permissions.clone(),
+            manifest.contracts.clone(),
+        ))
+    }
+
     pub fn open_plugin(&self, id: &str) -> Result<(), String> {
         let mut state = self.inner.lock().expect("host");
         Self::prune_locked(&self.platform, &mut state);
         let Some(manifest) = state.plugins.get(id).cloned() else {
             return Err(format!("unknown Plugin: {id}"));
         };
-        let ui_entry = manifest.ui_entry_path();
         let plugin_id = manifest.id.clone();
+
+        if manifest.is_privileged() {
+            if !state.sidecars.contains_key(&plugin_id) {
+                let entry = manifest
+                    .sidecar_entry_path()
+                    .ok_or_else(|| "privileged Plugin missing Sidecar entry".to_string())?;
+                let sidecar_id = self
+                    .platform
+                    .spawn_sidecar(&plugin_id, &entry)
+                    .map_err(|e| format!("Sidecar spawn failed: {e}"))?;
+                state.sidecars.insert(plugin_id.clone(), sidecar_id);
+
+                let sidecar_proxy = self.bus.proxy(
+                    plugin_id.clone(),
+                    manifest.permissions.clone(),
+                    manifest.contracts.clone(),
+                );
+                drop(state);
+                attach_fixture_sidecar(&plugin_id, &sidecar_proxy)?;
+                state = self.inner.lock().expect("host");
+            }
+        }
+
+        let ui_entry = manifest.ui_entry_path();
         let window = self
             .platform
             .create_pure_ui_window(&plugin_id, &ui_entry);
         state.plugin_windows.push((
             window,
-            WindowKind::PureUi { plugin_id },
+            WindowKind::PureUi {
+                plugin_id: plugin_id.clone(),
+            },
         ));
         Ok(())
+    }
+
+    pub fn sidecar_running_for(&self, plugin_id: &str) -> bool {
+        let state = self.inner.lock().expect("host");
+        state
+            .sidecars
+            .get(plugin_id)
+            .is_some_and(|id| self.platform.is_sidecar_running(id))
+    }
+
+    pub fn close_plugin_windows(&self, plugin_id: &str) {
+        let mut state = self.inner.lock().expect("host");
+        let mut kept = Vec::new();
+        for (id, kind) in state.plugin_windows.drain(..) {
+            let matches =
+                matches!(&kind, WindowKind::PureUi { plugin_id: pid } if pid == plugin_id);
+            if matches {
+                self.platform.close_window(&id);
+            } else {
+                kept.push((id, kind));
+            }
+        }
+        state.plugin_windows = kept;
+        if let Some(sidecar) = state.sidecars.remove(plugin_id) {
+            self.platform.stop_sidecar(&sidecar);
+        }
+    }
+
+    /// Resolve Plugin id from a window label (`plugin-{id}-{n}`).
+    pub fn plugin_id_for_window_label(&self, label: &str) -> Option<String> {
+        let state = self.inner.lock().expect("host");
+        state.plugin_windows.iter().find_map(|(id, kind)| {
+            if id.0 == label {
+                if let WindowKind::PureUi { plugin_id } = kind {
+                    return Some(plugin_id.clone());
+                }
+            }
+            None
+        })
+    }
+
+    pub fn bus_emit_from_window(
+        &self,
+        window_label: &str,
+        topic: &str,
+        payload: Value,
+    ) -> Result<(), String> {
+        let plugin_id = self
+            .plugin_id_for_window_label(window_label)
+            .ok_or_else(|| "window is not a Plugin surface".to_string())?;
+        let proxy = self.scoped_bus(&plugin_id).map_err(|e| e.to_string())?;
+        proxy.emit(topic, payload).map_err(|e| e.to_string())
+    }
+
+    pub fn bus_call_from_window(
+        &self,
+        window_label: &str,
+        topic: &str,
+        payload: Value,
+    ) -> Result<Value, String> {
+        let plugin_id = self
+            .plugin_id_for_window_label(window_label)
+            .ok_or_else(|| "window is not a Plugin surface".to_string())?;
+        let proxy = self.scoped_bus(&plugin_id).map_err(|e| e.to_string())?;
+        proxy.call(topic, payload).map_err(|e| e.to_string())
     }
 
     pub fn open_launcher(&self) {
@@ -278,10 +393,28 @@ impl Host {
     }
 }
 
+/// In-process Sidecar participant for the echo fixture (no Node runtime).
+fn attach_fixture_sidecar(plugin_id: &str, proxy: &BusProxy) -> Result<(), String> {
+    if plugin_id != "echo" {
+        return Ok(());
+    }
+    let emit_proxy = proxy.clone();
+    proxy
+        .subscribe("echo.ping", move |payload| {
+            let _ = emit_proxy.emit("echo.pong", payload);
+        })
+        .map_err(|e| e.to_string())?;
+    proxy
+        .serve("echo.reflect", |req| Ok(req))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory_platform::MemoryPlatform;
+    use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
 
@@ -388,18 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn host_lists_hello_plugin_from_plugins_directory() {
+    fn host_lists_hello_and_echo_plugins_from_plugins_directory() {
         let (host, _) = boot();
         host.load_plugins_from(&fixture_plugins_dir());
         let listed = host.listed_plugins();
-        assert_eq!(
-            listed,
-            vec![ListedPlugin {
-                id: "hello".into(),
-                name: "Hello".into(),
-                version: "0.1.0".into(),
-            }]
-        );
+        assert!(listed.iter().any(|p| p.id == "hello" && p.name == "Hello"));
+        assert!(listed.iter().any(|p| p.id == "echo" && p.name == "Echo"));
     }
 
     #[test]
@@ -429,7 +556,6 @@ mod tests {
             }"#,
             "index.html",
         );
-        // Missing ui file
         let missing_ui = dir.join("missing-ui");
         fs::create_dir_all(&missing_ui).unwrap();
         fs::write(
@@ -476,6 +602,7 @@ mod tests {
         let ui = platform.ui_entry_for(&id).expect("ui path recorded");
         assert!(ui.ends_with("plugins/hello/index.html"));
         assert!(ui.is_file());
+        assert!(!host.sidecar_running_for("hello"));
     }
 
     #[test]
@@ -514,5 +641,164 @@ mod tests {
         let (host, _) = boot();
         let err = host.open_plugin("nope").expect_err("should fail");
         assert!(err.contains("unknown Plugin"));
+    }
+
+    #[test]
+    fn privileged_echo_plugin_spawns_one_sidecar_tied_to_plugin() {
+        let (host, platform) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+        assert!(host.sidecar_running_for("echo"));
+        assert_eq!(platform.running_sidecar_count_for("echo"), 1);
+
+        host.open_plugin("echo").expect("open again");
+        assert_eq!(
+            platform.running_sidecar_count_for("echo"),
+            1,
+            "one Sidecar per privileged Plugin"
+        );
+
+        host.close_plugin_windows("echo");
+        assert!(!host.sidecar_running_for("echo"));
+        assert_eq!(platform.running_sidecar_count_for("echo"), 0);
+    }
+
+    #[test]
+    fn pub_sub_round_trip_through_host_scoped_proxies() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+
+        let received = Arc::new(Mutex::new(None));
+        let ui = host.scoped_bus("echo").expect("ui proxy");
+        let r = Arc::clone(&received);
+        ui.subscribe("echo.pong", move |payload| {
+            *r.lock().expect("lock") = Some(payload);
+        })
+        .expect("subscribe");
+
+        // Sidecar fixture already subscribed to ping and emits pong.
+        ui.emit("echo.ping", json!({ "message": "hi" }))
+            .expect("emit");
+        assert_eq!(
+            *received.lock().expect("lock"),
+            Some(json!({ "message": "hi" }))
+        );
+    }
+
+    #[test]
+    fn request_response_round_trip_with_validated_contract() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+
+        let ui = host.scoped_bus("echo").expect("ui proxy");
+        let result = ui
+            .call("echo.reflect", json!({ "value": "round-trip" }))
+            .expect("call");
+        assert_eq!(result, json!({ "value": "round-trip" }));
+    }
+
+    #[test]
+    fn undeclared_bus_traffic_is_rejected() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+
+        let ui = host.scoped_bus("echo").expect("ui proxy");
+        let emit_err = ui
+            .emit("echo.forbidden", json!({ "message": "x" }))
+            .expect_err("deny emit");
+        assert!(matches!(
+            emit_err,
+            BusError::PermissionDenied { action: "emit", .. }
+        ));
+
+        let sub_err = ui
+            .subscribe("echo.forbidden", |_| {})
+            .expect_err("deny subscribe");
+        assert!(matches!(
+            sub_err,
+            BusError::PermissionDenied {
+                action: "subscribe",
+                ..
+            }
+        ));
+
+        let call_err = ui
+            .call("echo.forbidden", json!({ "value": "x" }))
+            .expect_err("deny call");
+        assert!(matches!(
+            call_err,
+            BusError::PermissionDenied { action: "call", .. }
+        ));
+    }
+
+    #[test]
+    fn invalid_contract_payload_is_rejected() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+
+        let ui = host.scoped_bus("echo").expect("ui proxy");
+        let err = ui
+            .emit("echo.ping", json!({ "nope": true }))
+            .expect_err("contract");
+        assert!(matches!(err, BusError::ContractViolation(_)));
+    }
+
+    #[test]
+    fn window_bus_commands_use_scoped_proxy_not_global_bus() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("echo").expect("open echo");
+
+        let label = host
+            .open_windows()
+            .into_iter()
+            .find_map(|(id, kind)| match kind {
+                WindowKind::PureUi { plugin_id } if plugin_id == "echo" => Some(id),
+                _ => None,
+            })
+            .expect("echo window");
+
+        let received = Arc::new(Mutex::new(None));
+        let ui = host.scoped_bus("echo").expect("listener");
+        let r = Arc::clone(&received);
+        ui.subscribe("echo.pong", move |payload| {
+            *r.lock().expect("lock") = Some(payload);
+        })
+        .expect("subscribe");
+
+        host.bus_emit_from_window(&label, "echo.ping", json!({ "message": "scoped" }))
+            .expect("window emit");
+        assert_eq!(
+            *received.lock().expect("lock"),
+            Some(json!({ "message": "scoped" }))
+        );
+
+        let reflected = host
+            .bus_call_from_window(&label, "echo.reflect", json!({ "value": "via-window" }))
+            .expect("window call");
+        assert_eq!(reflected, json!({ "value": "via-window" }));
+
+        let denied = host.bus_emit_from_window(
+            &label,
+            "echo.forbidden",
+            json!({ "message": "nope" }),
+        );
+        assert!(denied.is_err());
+    }
+
+    #[test]
+    fn pure_ui_hello_has_no_bus_permissions() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("hello").expect("open hello");
+        let ui = host.scoped_bus("hello").expect("proxy");
+        let err = ui
+            .emit("anything", json!({}))
+            .expect_err("hello has empty permissions");
+        assert!(matches!(err, BusError::PermissionDenied { .. }));
     }
 }

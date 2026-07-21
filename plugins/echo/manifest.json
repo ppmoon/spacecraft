@@ -1,0 +1,53 @@
+{
+  "id": "echo",
+  "name": "Echo",
+  "version": "0.1.0",
+  "ui": "index.html",
+  "window": {
+    "type": "local"
+  },
+  "sidecar": "sidecar.marker",
+  "permissions": {
+    "emit": ["echo.ping", "echo.pong"],
+    "subscribe": ["echo.ping", "echo.pong"],
+    "call": ["echo.reflect"]
+  },
+  "contracts": {
+    "echo.ping": {
+      "request": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string" }
+        }
+      },
+      "response": { "type": "object" }
+    },
+    "echo.pong": {
+      "request": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string" }
+        }
+      },
+      "response": { "type": "object" }
+    },
+    "echo.reflect": {
+      "request": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": { "type": "string" }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": { "type": "string" }
+        }
+      }
+    }
+  }
+}

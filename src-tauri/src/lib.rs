@@ -1,3 +1,4 @@
+mod bus;
 mod host;
 mod manifest;
 mod memory_platform;
@@ -11,7 +12,8 @@ pub use platform::{Platform, TrayId, WindowId, WindowKind};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::RunEvent;
+use serde_json::Value;
+use tauri::{Emitter, RunEvent, WebviewWindow};
 
 static HOST: OnceLock<Mutex<Option<Arc<Host>>>> = OnceLock::new();
 
@@ -65,6 +67,40 @@ fn open_plugin(id: String) -> Result<(), String> {
     with_host(|h| h.open_plugin(&id))
 }
 
+/// Scoped Bus emit — window identity selects the Plugin; no raw global Bus.
+#[tauri::command]
+fn bus_emit(window: WebviewWindow, topic: String, payload: Value) -> Result<(), String> {
+    with_host(|h| h.bus_emit_from_window(window.label(), &topic, payload))
+}
+
+#[tauri::command]
+fn bus_call(window: WebviewWindow, topic: String, payload: Value) -> Result<Value, String> {
+    with_host(|h| h.bus_call_from_window(window.label(), &topic, payload))
+}
+
+/// Subscribe via scoped proxy; events are pushed to this window only as `bus://event`.
+#[tauri::command]
+fn bus_subscribe(window: WebviewWindow, topic: String) -> Result<(), String> {
+    let label = window.label().to_string();
+    let host = current_host().ok_or_else(|| "Host is not started".to_string())?;
+    let plugin_id = host
+        .plugin_id_for_window_label(&label)
+        .ok_or_else(|| "window is not a Plugin surface".to_string())?;
+    let proxy = host.scoped_bus(&plugin_id).map_err(|e| e.to_string())?;
+    let win = window.clone();
+    let topic_for_event = topic.clone();
+    proxy
+        .subscribe(&topic, move |payload| {
+            let envelope = serde_json::json!({
+                "topic": topic_for_event,
+                "payload": payload,
+            });
+            let _ = win.emit("bus://event", envelope);
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn run() {
     let smoke = std::env::var("SPACECRAFT_SMOKE").ok().as_deref() == Some("1");
 
@@ -75,7 +111,10 @@ pub fn run() {
             close_launcher,
             close_command_palette,
             list_plugins,
-            open_plugin
+            open_plugin,
+            bus_emit,
+            bus_call,
+            bus_subscribe
         ])
         .setup(move |app| {
             let platform = Arc::new(tauri_platform::TauriPlatform::new(app.handle().clone()));
@@ -89,6 +128,7 @@ pub fn run() {
                 host.open_command_palette();
                 host.open_blank_window();
                 let _ = host.open_plugin("hello");
+                let _ = host.open_plugin("echo");
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(1500));

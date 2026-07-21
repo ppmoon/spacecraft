@@ -1,0 +1,5 @@
+# Marker file: Sidecar entry for the echo fixture.
+# Host spawns a Sidecar lifecycle for this privileged Plugin and attaches
+# the in-process echo Bus participant (tests / MemoryPlatform).
+# Production Tauri may also spawn an external binary later; Phase 1.03
+# proves Bus + Sidecar lifecycle without a Node plugin-host.

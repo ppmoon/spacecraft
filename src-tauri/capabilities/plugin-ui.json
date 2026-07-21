@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "plugin-ui",
+  "description": "Scoped Bus proxy for Plugin windows — no Host shell commands, no raw Bus",
+  "windows": ["plugin-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-bus-emit",
+    "allow-bus-call",
+    "allow-bus-subscribe"
+  ]
+}

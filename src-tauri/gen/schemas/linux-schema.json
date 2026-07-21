@@ -177,6 +177,24 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allow a Plugin window to call on the scoped Bus proxy",
+          "type": "string",
+          "const": "allow-bus-call",
+          "markdownDescription": "Allow a Plugin window to call on the scoped Bus proxy"
+        },
+        {
+          "description": "Allow a Plugin window to emit on the scoped Bus proxy",
+          "type": "string",
+          "const": "allow-bus-emit",
+          "markdownDescription": "Allow a Plugin window to emit on the scoped Bus proxy"
+        },
+        {
+          "description": "Allow a Plugin window to subscribe via the scoped Bus proxy",
+          "type": "string",
+          "const": "allow-bus-subscribe",
+          "markdownDescription": "Allow a Plugin window to subscribe via the scoped Bus proxy"
+        },
+        {
           "description": "Allow the UI to close the command palette",
           "type": "string",
           "const": "allow-close-command-palette",
