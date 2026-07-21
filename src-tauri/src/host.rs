@@ -2,7 +2,7 @@
 //! Behaviour is exercised at the Host seam via an injected Platform.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -30,6 +30,7 @@ struct HostState {
     blanks: Vec<WindowId>,
     plugin_windows: Vec<(WindowId, WindowKind)>,
     plugins: HashMap<String, Manifest>,
+    plugins_dir: Option<PathBuf>,
 }
 
 impl Host {
@@ -44,6 +45,7 @@ impl Host {
                 blanks: Vec::new(),
                 plugin_windows: Vec::new(),
                 plugins: HashMap::new(),
+                plugins_dir: None,
             }),
         }
     }
@@ -112,12 +114,18 @@ impl Host {
     }
 
     /// Scan `dir` for Plugin folders with a valid Manifest. Invalid packages are skipped.
+    /// Remembers `dir` so later launcher opens re-scan (drop-in discovery).
     pub fn load_plugins_from(&self, dir: &Path) {
+        let discovered = Self::scan_plugins_dir(dir);
+        let mut state = self.inner.lock().expect("host");
+        state.plugins_dir = Some(dir.to_path_buf());
+        state.plugins = discovered;
+    }
+
+    fn scan_plugins_dir(dir: &Path) -> HashMap<String, Manifest> {
         let mut discovered = HashMap::new();
         let Ok(entries) = std::fs::read_dir(dir) else {
-            let mut state = self.inner.lock().expect("host");
-            state.plugins = discovered;
-            return;
+            return discovered;
         };
 
         for entry in entries.flatten() {
@@ -129,13 +137,19 @@ impl Host {
                 discovered.insert(manifest.id.clone(), manifest);
             }
         }
+        discovered
+    }
 
-        let mut state = self.inner.lock().expect("host");
-        state.plugins = discovered;
+    fn rescan_plugins_locked(state: &mut HostState) {
+        let Some(dir) = state.plugins_dir.clone() else {
+            return;
+        };
+        state.plugins = Self::scan_plugins_dir(&dir);
     }
 
     pub fn listed_plugins(&self) -> Vec<ListedPlugin> {
-        let state = self.inner.lock().expect("host");
+        let mut state = self.inner.lock().expect("host");
+        Self::rescan_plugins_locked(&mut state);
         let mut list: Vec<_> = state
             .plugins
             .values()
@@ -169,6 +183,7 @@ impl Host {
 
     pub fn open_launcher(&self) {
         let mut state = self.inner.lock().expect("host");
+        Self::rescan_plugins_locked(&mut state);
         Self::prune_locked(&self.platform, &mut state);
         if state.launcher.is_some() {
             return;
@@ -283,8 +298,12 @@ mod tests {
 
     fn temp_plugins_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "spacecraft-plugins-{}",
-            std::process::id()
+            "spacecraft-plugins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp plugins dir");
@@ -457,6 +476,37 @@ mod tests {
         let ui = platform.ui_entry_for(&id).expect("ui path recorded");
         assert!(ui.ends_with("plugins/hello/index.html"));
         assert!(ui.is_file());
+    }
+
+    #[test]
+    fn opening_launcher_rescans_plugins_directory() {
+        let dir = temp_plugins_dir();
+        let (host, _) = boot();
+        host.load_plugins_from(&dir);
+        assert!(host.listed_plugins().is_empty());
+
+        write_plugin(
+            &dir,
+            "dropped",
+            r#"{
+              "id": "dropped",
+              "name": "Dropped",
+              "version": "0.1.0",
+              "ui": "index.html",
+              "window": { "type": "local" }
+            }"#,
+            "index.html",
+        );
+        host.open_launcher();
+        assert_eq!(
+            host.listed_plugins(),
+            vec![ListedPlugin {
+                id: "dropped".into(),
+                name: "Dropped".into(),
+                version: "0.1.0".into(),
+            }]
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
