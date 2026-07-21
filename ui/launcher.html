@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Launcher</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #101820;
+        --panel: #1b2a32;
+        --ink: #e8f1f2;
+        --accent: #2a9d8f;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: linear-gradient(160deg, #0b1419, var(--bg));
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      main {
+        padding: 1.5rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+      }
+      p {
+        margin: 0 0 1rem;
+        opacity: 0.8;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        background: var(--accent);
+        color: #04221f;
+        font: inherit;
+        font-weight: 600;
+        padding: 0.6rem 1rem;
+        border-radius: 0.4rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Spacecraft</h1>
+      <p>Light launcher — open a blank window or quit from the tray.</p>
+      <button id="open-blank" type="button">Open blank window</button>
+      <button id="close" type="button">Close</button>
+    </main>
+    <script>
+      const api = window.spacecraft;
+      document.getElementById("open-blank").addEventListener("click", () => {
+        api?.openBlankWindow();
+      });
+      document.getElementById("close").addEventListener("click", () => {
+        api?.closeLauncher();
+      });
+    </script>
+  </body>
+</html>
