@@ -1,39 +1,23 @@
 {
   "name": "spacecraft",
-  "version": "1.0.0",
-  "description": "Extensible desktop workbench host",
-  "main": "dist/main.js",
-  "directories": {
-    "doc": "docs",
-    "test": "tests"
-  },
+  "version": "0.1.0",
+  "description": "Extensible desktop workbench host (Tauri)",
+  "private": true,
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "build": "tsc",
-    "start": "npm run build && electron .",
-    "typecheck": "tsc --noEmit",
-    "smoke": "npm run build && SPACECRAFT_SMOKE=1 electron ."
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "start": "tauri dev",
+    "build": "tauri build",
+    "typecheck": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "smoke": "SPACECRAFT_SMOKE=1 tauri dev"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ppmoon/spacecraft.git"
   },
-  "keywords": [],
-  "author": "",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/ppmoon/spacecraft/issues"
-  },
-  "homepage": "https://github.com/ppmoon/spacecraft#readme",
-  "type": "module",
   "devDependencies": {
-    "@types/node": "^26.1.1",
-    "electron": "^43.1.1",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
-  },
-  "dependencies": {
-    "zod": "^4.4.3"
+    "@tauri-apps/cli": "^2.11.4"
   }
 }
