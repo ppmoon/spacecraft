@@ -12,7 +12,6 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
-use std::process::Child;
 
 pub struct TauriPlatform {
     app: AppHandle,
@@ -24,7 +23,7 @@ struct TauriPlatformState {
     shortcuts: HashMap<String, Shortcut>,
     trays: HashMap<String, TrayIcon>,
     privileged: HashMap<String, bool>,
-    sidecars: HashMap<String, Option<Child>>,
+    sidecars: HashMap<String, ()>,
 }
 
 impl TauriPlatform {
@@ -197,49 +196,23 @@ impl Platform for TauriPlatform {
         state.privileged.get(&id.0).copied().unwrap_or(false)
     }
 
-    fn spawn_sidecar(&self, plugin_id: &str, entry: &Path) -> Result<SidecarId, String> {
+    fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {
         let mut state = self.state.lock().expect("tauri platform");
         state.next_id += 1;
         let id = format!("sidecar-{}-{}", plugin_id, state.next_id);
-
-        // Marker / non-executable entries: logical Sidecar lifecycle only.
-        // Host attaches the in-process Bus participant (echo fixture). No Node runtime.
-        let child = if entry
-            .extension()
-            .is_some_and(|ext| ext == "marker")
-            || !is_executable(entry)
-        {
-            None
-        } else {
-            Some(
-                std::process::Command::new(entry)
-                    .spawn()
-                    .map_err(|e| format!("failed to spawn Sidecar: {e}"))?,
-            )
-        };
-        state.sidecars.insert(id.clone(), child);
-        Ok(SidecarId(id))
+        // Lifecycle bookkeeping only — Host owns the out-of-process Child via sidecar_bridge.
+        state.sidecars.insert(id.clone(), ());
+        SidecarId(id)
     }
 
     fn stop_sidecar(&self, id: &SidecarId) {
         let mut state = self.state.lock().expect("tauri platform");
-        if let Some(mut child) = state.sidecars.remove(&id.0).flatten() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        state.sidecars.remove(&id.0);
     }
 
     fn is_sidecar_running(&self, id: &SidecarId) -> bool {
-        let mut state = self.state.lock().expect("tauri platform");
-        match state.sidecars.get_mut(&id.0) {
-            Some(Some(child)) => match child.try_wait() {
-                Ok(None) => true,
-                Ok(Some(_)) => false,
-                Err(_) => false,
-            },
-            Some(None) => true, // logical Sidecar
-            None => false,
-        }
+        let state = self.state.lock().expect("tauri platform");
+        state.sidecars.contains_key(&id.0)
     }
 
     fn register_shortcut(&self, accelerator: &str, handler: Box<dyn Fn() + Send + Sync>) {
@@ -272,23 +245,5 @@ impl Platform for TauriPlatform {
 
     fn quit(&self) {
         self.app.exit(0);
-    }
-}
-
-fn is_executable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        path.metadata()
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        path.extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
     }
 }

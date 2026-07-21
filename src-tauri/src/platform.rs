@@ -31,7 +31,7 @@ pub trait Platform: Send + Sync {
     fn is_window_destroyed(&self, id: &WindowId) -> bool;
     /// Whether the window may call privileged Host shell commands (not Bus).
     fn window_allows_privileged_apis(&self, id: &WindowId) -> bool;
-    fn spawn_sidecar(&self, plugin_id: &str, entry: &Path) -> Result<SidecarId, String>;
+    fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId;
     fn stop_sidecar(&self, id: &SidecarId);
     fn is_sidecar_running(&self, id: &SidecarId) -> bool;
     fn register_shortcut(&self, accelerator: &str, handler: Box<dyn Fn() + Send + Sync>);

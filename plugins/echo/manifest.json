@@ -6,7 +6,7 @@
   "window": {
     "type": "local"
   },
-  "sidecar": "sidecar.marker",
+  "sidecar": "echo-sidecar",
   "permissions": {
     "emit": ["echo.ping", "echo.pong"],
     "subscribe": ["echo.ping", "echo.pong"],

@@ -12,6 +12,8 @@ use serde_json::Value;
 use crate::bus::{Bus, BusError, BusProxy};
 use crate::manifest::Manifest;
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
+use crate::sidecar_bridge;
+use std::process::Child;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ListedPlugin {
@@ -33,8 +35,8 @@ struct HostState {
     palette: Option<WindowId>,
     blanks: Vec<WindowId>,
     plugin_windows: Vec<(WindowId, WindowKind)>,
-    /// plugin_id → Sidecar process handle
-    sidecars: HashMap<String, SidecarId>,
+    /// plugin_id → (platform lifecycle id, child process)
+    sidecars: HashMap<String, (SidecarId, Child)>,
     plugins: HashMap<String, Manifest>,
     plugins_dir: Option<PathBuf>,
 }
@@ -107,8 +109,10 @@ impl Host {
         for (id, _) in state.plugin_windows.drain(..) {
             self.platform.close_window(&id);
         }
-        for (_, sidecar) in state.sidecars.drain() {
-            self.platform.stop_sidecar(&sidecar);
+        for (_, (sidecar_id, mut child)) in state.sidecars.drain() {
+            let _ = child.kill();
+            let _ = child.wait();
+            self.platform.stop_sidecar(&sidecar_id);
         }
         if let Some(tray) = state.tray.take() {
             self.platform.destroy_tray(&tray);
@@ -198,23 +202,21 @@ impl Host {
 
         if manifest.is_privileged() {
             if !state.sidecars.contains_key(&plugin_id) {
-                let entry = manifest
-                    .sidecar_entry_path()
-                    .ok_or_else(|| "privileged Plugin missing Sidecar entry".to_string())?;
-                let sidecar_id = self
-                    .platform
-                    .spawn_sidecar(&plugin_id, &entry)
-                    .map_err(|e| format!("Sidecar spawn failed: {e}"))?;
-                state.sidecars.insert(plugin_id.clone(), sidecar_id);
-
+                let binary = resolve_sidecar_binary(&manifest)?;
+                let sidecar_id = self.platform.spawn_sidecar(&plugin_id);
                 let sidecar_proxy = self.bus.proxy(
                     plugin_id.clone(),
                     manifest.permissions.clone(),
                     manifest.contracts.clone(),
                 );
                 drop(state);
-                attach_fixture_sidecar(&plugin_id, &sidecar_proxy)?;
+                let child = sidecar_bridge::spawn_and_attach(&binary, sidecar_proxy)
+                    .map_err(|e| {
+                        self.platform.stop_sidecar(&sidecar_id);
+                        e
+                    })?;
                 state = self.inner.lock().expect("host");
+                state.sidecars.insert(plugin_id.clone(), (sidecar_id, child));
             }
         }
 
@@ -232,11 +234,15 @@ impl Host {
     }
 
     pub fn sidecar_running_for(&self, plugin_id: &str) -> bool {
-        let state = self.inner.lock().expect("host");
-        state
-            .sidecars
-            .get(plugin_id)
-            .is_some_and(|id| self.platform.is_sidecar_running(id))
+        let mut state = self.inner.lock().expect("host");
+        if let Some((id, child)) = state.sidecars.get_mut(plugin_id) {
+            match child.try_wait() {
+                Ok(None) => self.platform.is_sidecar_running(id),
+                Ok(Some(_)) | Err(_) => false,
+            }
+        } else {
+            false
+        }
     }
 
     pub fn close_plugin_windows(&self, plugin_id: &str) {
@@ -252,9 +258,7 @@ impl Host {
             }
         }
         state.plugin_windows = kept;
-        if let Some(sidecar) = state.sidecars.remove(plugin_id) {
-            self.platform.stop_sidecar(&sidecar);
-        }
+        Self::stop_sidecar_locked(&self.platform, &mut state, plugin_id);
     }
 
     /// Resolve Plugin id from a window label (`plugin-{id}-{n}`).
@@ -390,24 +394,85 @@ impl Host {
         state
             .plugin_windows
             .retain(|(id, _)| !platform.is_window_destroyed(id));
+
+        // Stop Sidecars whose Plugin windows are all gone.
+        let active: std::collections::HashSet<String> = state
+            .plugin_windows
+            .iter()
+            .filter_map(|(_, kind)| match kind {
+                WindowKind::PureUi { plugin_id } => Some(plugin_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let orphaned: Vec<String> = state
+            .sidecars
+            .keys()
+            .filter(|id| !active.contains(*id))
+            .cloned()
+            .collect();
+        for plugin_id in orphaned {
+            Self::stop_sidecar_locked(platform, state, &plugin_id);
+        }
+    }
+
+    fn stop_sidecar_locked(
+        platform: &Arc<dyn Platform>,
+        state: &mut HostState,
+        plugin_id: &str,
+    ) {
+        if let Some((sidecar_id, mut child)) = state.sidecars.remove(plugin_id) {
+            let _ = child.kill();
+            let _ = child.wait();
+            platform.stop_sidecar(&sidecar_id);
+        }
     }
 }
 
-/// In-process Sidecar participant for the echo fixture (no Node runtime).
-fn attach_fixture_sidecar(plugin_id: &str, proxy: &BusProxy) -> Result<(), String> {
-    if plugin_id != "echo" {
-        return Ok(());
+fn resolve_sidecar_binary(manifest: &Manifest) -> Result<PathBuf, String> {
+    let name = manifest
+        .sidecar
+        .as_ref()
+        .ok_or_else(|| "privileged Plugin missing Sidecar entry".to_string())?;
+
+    if let Some(path) = option_env!("CARGO_BIN_EXE_echo-sidecar") {
+        if name == "echo-sidecar" || manifest.id == "echo" {
+            return Ok(PathBuf::from(path));
+        }
     }
-    let emit_proxy = proxy.clone();
-    proxy
-        .subscribe("echo.ping", move |payload| {
-            let _ = emit_proxy.emit("echo.pong", payload);
-        })
-        .map_err(|e| e.to_string())?;
-    proxy
-        .serve("echo.reflect", |req| Ok(req))
-        .map_err(|e| e.to_string())?;
-    Ok(())
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            #[cfg(windows)]
+            {
+                let candidate = dir.join(format!("{name}.exe"));
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/debug")
+        .join(name);
+    if debug.exists() {
+        return Ok(debug);
+    }
+
+    if let Some(path) = manifest.sidecar_entry_path() {
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    Err(format!(
+        "Sidecar binary `{name}` not found for Plugin `{}`",
+        manifest.id
+    ))
 }
 
 #[cfg(test)]
@@ -448,6 +513,22 @@ mod tests {
         fs::create_dir_all(&dir).expect("plugin dir");
         fs::write(dir.join("manifest.json"), manifest_body).expect("manifest");
         fs::write(dir.join(ui_name), "<html><body>hi</body></html>").expect("ui");
+    }
+
+    fn wait_for_value(
+        slot: &Arc<Mutex<Option<serde_json::Value>>>,
+        timeout_ms: u64,
+    ) -> Option<serde_json::Value> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(value) = slot.lock().expect("lock").clone() {
+                return Some(value);
+            }
+            if start.elapsed().as_millis() as u64 >= timeout_ms {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -677,11 +758,11 @@ mod tests {
         })
         .expect("subscribe");
 
-        // Sidecar fixture already subscribed to ping and emits pong.
+        // Sidecar process answers ping asynchronously over stdio.
         ui.emit("echo.ping", json!({ "message": "hi" }))
             .expect("emit");
         assert_eq!(
-            *received.lock().expect("lock"),
+            wait_for_value(&received, 1000),
             Some(json!({ "message": "hi" }))
         );
     }
@@ -773,7 +854,7 @@ mod tests {
         host.bus_emit_from_window(&label, "echo.ping", json!({ "message": "scoped" }))
             .expect("window emit");
         assert_eq!(
-            *received.lock().expect("lock"),
+            wait_for_value(&received, 1000),
             Some(json!({ "message": "scoped" }))
         );
 

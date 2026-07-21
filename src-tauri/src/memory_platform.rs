@@ -150,7 +150,7 @@ impl Platform for MemoryPlatform {
             .unwrap_or(false)
     }
 
-    fn spawn_sidecar(&self, plugin_id: &str, _entry: &Path) -> Result<SidecarId, String> {
+    fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {
         let mut state = self.state.lock().expect("memory platform");
         state.next_id += 1;
         let id = format!("sidecar-{}-{}", plugin_id, state.next_id);
@@ -161,7 +161,7 @@ impl Platform for MemoryPlatform {
                 running: true,
             },
         );
-        Ok(SidecarId(id))
+        SidecarId(id)
     }
 
     fn stop_sidecar(&self, id: &SidecarId) {

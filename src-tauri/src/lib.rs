@@ -3,6 +3,7 @@ mod host;
 mod manifest;
 mod memory_platform;
 mod platform;
+mod sidecar_bridge;
 mod tauri_platform;
 
 pub use host::{Host, ListedPlugin};

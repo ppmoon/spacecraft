@@ -127,9 +127,12 @@ impl Manifest {
 
         if let Some(sidecar) = &parsed.sidecar {
             validate_non_empty(sidecar, "sidecar")?;
-            let sidecar_path = resolve_under_root(dir, sidecar)?;
-            if !sidecar_path.exists() {
-                return Err(ManifestError::MissingSidecarEntry);
+            // Bare binary names (no path separators) are resolved by the Host at spawn time.
+            if sidecar.contains('/') || sidecar.contains('\\') {
+                let sidecar_path = resolve_under_root(dir, sidecar)?;
+                if !sidecar_path.exists() {
+                    return Err(ManifestError::MissingSidecarEntry);
+                }
             }
         }
 
