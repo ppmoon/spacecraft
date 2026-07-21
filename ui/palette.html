@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Command palette</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #0f1720;
+        --ink: #f3f7f8;
+        --muted: #9db0b5;
+        --accent: #e9c46a;
+        --row: #1a2530;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: rgba(8, 12, 16, 0.72);
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      .shell {
+        max-width: 36rem;
+        margin: 12vh auto 0;
+        background: var(--bg);
+        border: 1px solid #2a3844;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 0;
+        outline: 0;
+        padding: 1rem 1.1rem;
+        font: inherit;
+        font-size: 1.05rem;
+        background: transparent;
+        color: var(--ink);
+      }
+      button.command {
+        display: block;
+        width: 100%;
+        text-align: left;
+        border: 0;
+        background: var(--row);
+        color: var(--ink);
+        font: inherit;
+        padding: 0.85rem 1.1rem;
+        cursor: pointer;
+      }
+      button.command:hover,
+      button.command:focus {
+        background: #243140;
+        outline: none;
+      }
+      .hint {
+        padding: 0.65rem 1.1rem 1rem;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .accent {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <input id="query" type="search" placeholder="Type a command…" autofocus />
+      <button class="command" id="open-blank" type="button">
+        Open blank window
+      </button>
+      <div class="hint">
+        <span class="accent">Ctrl/Cmd+K</span> opens this palette
+      </div>
+    </div>
+    <script>
+      const api = window.spacecraft;
+      document.getElementById("open-blank").addEventListener("click", () => {
+        api?.openBlankWindow();
+        api?.closeCommandPalette();
+      });
+      document.getElementById("query").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          document.getElementById("open-blank").click();
+        }
+        if (event.key === "Escape") {
+          api?.closeCommandPalette();
+        }
+      });
+    </script>
+  </body>
+</html>
