@@ -45,7 +45,6 @@ fn close_command_palette() {
     with_host(|h| h.close_command_palette());
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let smoke = std::env::var("SPACECRAFT_SMOKE").ok().as_deref() == Some("1");
 

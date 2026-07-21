@@ -122,7 +122,7 @@ impl Platform for TauriPlatform {
             .title(match kind {
                 WindowKind::Launcher => "Launcher",
                 WindowKind::Palette => "Command palette",
-                WindowKind::Blank => "Spacecraft",
+                WindowKind::Blank => "Blank window",
             })
             .inner_size(width, height)
             .resizable(kind == WindowKind::Blank);

@@ -23,7 +23,7 @@ npm install
 npm start
 ```
 
-This launches the Tauri Host. The app stays in the system tray / menu bar (no main window on boot).
+This launches the Tauri Host. The Host stays in the system tray / menu bar (no main window on boot).
 
 ### Host actions
 
