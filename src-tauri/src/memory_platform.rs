@@ -1,15 +1,22 @@
 //! In-memory Platform for Host-seam tests.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::platform::{Platform, TrayId, WindowId, WindowKind};
+
+struct MemoryWindow {
+    destroyed: bool,
+    privileged: bool,
+    ui_entry: Option<PathBuf>,
+}
 
 #[derive(Default)]
 struct MemoryState {
     next_id: u64,
     trays: HashMap<String, ()>,
-    windows: HashMap<String, (WindowKind, bool)>,
+    windows: HashMap<String, MemoryWindow>,
     shortcuts: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
     quit_called: bool,
     tray_quit: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -44,6 +51,15 @@ impl MemoryPlatform {
             quit();
         }
     }
+
+    pub fn ui_entry_for(&self, id: &WindowId) -> Option<PathBuf> {
+        self.state
+            .lock()
+            .expect("memory platform")
+            .windows
+            .get(&id.0)
+            .and_then(|w| w.ui_entry.clone())
+    }
 }
 
 impl Platform for MemoryPlatform {
@@ -63,18 +79,40 @@ impl Platform for MemoryPlatform {
         state.tray_quit = None;
     }
 
-    fn create_window(&self, kind: WindowKind) -> WindowId {
+    fn create_window(&self, _kind: WindowKind) -> WindowId {
         let mut state = self.state.lock().expect("memory platform");
         state.next_id += 1;
         let id = format!("win-{}", state.next_id);
-        state.windows.insert(id.clone(), (kind, false));
+        state.windows.insert(
+            id.clone(),
+            MemoryWindow {
+                destroyed: false,
+                privileged: true,
+                ui_entry: None,
+            },
+        );
+        WindowId(id)
+    }
+
+    fn create_pure_ui_window(&self, plugin_id: &str, ui_entry: &Path) -> WindowId {
+        let mut state = self.state.lock().expect("memory platform");
+        state.next_id += 1;
+        let id = format!("plugin-{}-{}", plugin_id, state.next_id);
+        state.windows.insert(
+            id.clone(),
+            MemoryWindow {
+                destroyed: false,
+                privileged: false,
+                ui_entry: Some(ui_entry.to_path_buf()),
+            },
+        );
         WindowId(id)
     }
 
     fn close_window(&self, id: &WindowId) {
         let mut state = self.state.lock().expect("memory platform");
         if let Some(entry) = state.windows.get_mut(&id.0) {
-            entry.1 = true;
+            entry.destroyed = true;
         }
     }
 
@@ -83,8 +121,17 @@ impl Platform for MemoryPlatform {
         state
             .windows
             .get(&id.0)
-            .map(|(_, destroyed)| *destroyed)
+            .map(|w| w.destroyed)
             .unwrap_or(true)
+    }
+
+    fn window_allows_privileged_apis(&self, id: &WindowId) -> bool {
+        let state = self.state.lock().expect("memory platform");
+        state
+            .windows
+            .get(&id.0)
+            .map(|w| w.privileged && !w.destroyed)
+            .unwrap_or(false)
     }
 
     fn register_shortcut(&self, accelerator: &str, handler: Box<dyn Fn() + Send + Sync>) {

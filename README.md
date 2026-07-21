@@ -25,6 +25,8 @@ npm start
 
 This launches the Tauri Host. The Host stays in the system tray / menu bar (no main window on boot).
 
+By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT_PLUGINS_DIR`). The fixture Pure-UI Plugin lives at `plugins/hello/`.
+
 ### Host actions
 
 | Action | How |
@@ -32,6 +34,7 @@ This launches the Tauri Host. The Host stays in the system tray / menu bar (no m
 | Open launcher | Tray menu → **Open Launcher** |
 | Open command palette | `Ctrl/Cmd+K` or tray menu → **Command Palette** |
 | Open blank window | Command palette → **Open blank window** (or launcher button) |
+| Open Hello Plugin | Launcher → Plugins → **Hello** → **Open** |
 | Quit | Tray menu → **Quit** |
 
 ## Test
@@ -48,12 +51,12 @@ Manual smoke on Windows, macOS, and the current test Linux:
 
 1. `npm install && npm start`
 2. Confirm tray / menu-bar icon appears
-3. Open launcher from the tray; close it
+3. Open launcher from the tray; confirm **Hello** is listed; open it
 4. Press `Ctrl+K` / `Cmd+K`; choose **Open blank window**
 5. Quit from the tray
 
 ```bash
-npm run smoke   # opens launcher + palette + blank window, then quits
+npm run smoke   # opens launcher + palette + blank + hello Plugin, then quits
 ```
 
-See `docs/smoke/phase-1-01.md` for platform notes.
+See `docs/smoke/phase-1-01.md` and `docs/smoke/phase-1-02.md` for platform notes.

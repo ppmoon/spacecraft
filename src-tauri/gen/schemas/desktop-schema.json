@@ -189,10 +189,22 @@
           "markdownDescription": "Allow the UI to close the launcher"
         },
         {
+          "description": "Allow the launcher to list discovered Plugins",
+          "type": "string",
+          "const": "allow-list-plugins",
+          "markdownDescription": "Allow the launcher to list discovered Plugins"
+        },
+        {
           "description": "Allow the UI to open a blank OS window via the Host",
           "type": "string",
           "const": "allow-open-blank-window",
           "markdownDescription": "Allow the UI to open a blank OS window via the Host"
+        },
+        {
+          "description": "Allow the launcher to open a discovered Plugin window",
+          "type": "string",
+          "const": "allow-open-plugin",
+          "markdownDescription": "Allow the launcher to open a discovered Plugin window"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
