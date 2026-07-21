@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-open-blank-window"
+description = "Allow the UI to open a blank OS window via the Host"
+commands.allow = ["open_blank_window"]
+
+[[permission]]
+identifier = "allow-close-launcher"
+description = "Allow the UI to close the launcher"
+commands.allow = ["close_launcher"]
+
+[[permission]]
+identifier = "allow-close-command-palette"
+description = "Allow the UI to close the command palette"
+commands.allow = ["close_command_palette"]

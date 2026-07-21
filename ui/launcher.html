@@ -52,12 +52,15 @@
       <button id="close" type="button">Close</button>
     </main>
     <script>
-      const api = window.spacecraft;
+      async function invoke(cmd) {
+        const fn = window.__TAURI__?.core?.invoke;
+        if (fn) await fn(cmd);
+      }
       document.getElementById("open-blank").addEventListener("click", () => {
-        api?.openBlankWindow();
+        invoke("open_blank_window");
       });
       document.getElementById("close").addEventListener("click", () => {
-        api?.closeLauncher();
+        invoke("close_launcher");
       });
     </script>
   </body>
