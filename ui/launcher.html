@@ -10,6 +10,7 @@
         --panel: #1b2a32;
         --ink: #e8f1f2;
         --accent: #2a9d8f;
+        --muted: #8aa0a8;
       }
       html,
       body {
@@ -20,16 +21,29 @@
         font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
       }
       main {
-        padding: 1.5rem;
+        padding: 1.25rem 1.5rem 1.5rem;
       }
       h1 {
-        margin: 0 0 0.5rem;
+        margin: 0 0 0.35rem;
         font-size: 1.25rem;
         font-weight: 600;
       }
       p {
         margin: 0 0 1rem;
         opacity: 0.8;
+      }
+      h2 {
+        margin: 1.25rem 0 0.5rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
       }
       button {
         appearance: none;
@@ -38,30 +52,105 @@
         color: #04221f;
         font: inherit;
         font-weight: 600;
-        padding: 0.6rem 1rem;
+        padding: 0.55rem 0.9rem;
         border-radius: 0.4rem;
         cursor: pointer;
+      }
+      button.secondary {
+        background: var(--panel);
+        color: var(--ink);
+      }
+      #plugins {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.4rem;
+      }
+      #plugins li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        background: var(--panel);
+        padding: 0.55rem 0.7rem;
+        border-radius: 0.4rem;
+      }
+      #plugins .meta {
+        min-width: 0;
+      }
+      #plugins .name {
+        font-weight: 600;
+      }
+      #plugins .id {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      #empty {
+        color: var(--muted);
+        font-size: 0.9rem;
       }
     </style>
   </head>
   <body>
     <main>
       <h1>Spacecraft</h1>
-      <p>Light launcher — open a blank window or quit from the tray.</p>
-      <button id="open-blank" type="button">Open blank window</button>
-      <button id="close" type="button">Close</button>
+      <p>Light launcher — open Plugins or a blank window.</p>
+      <div class="actions">
+        <button id="open-blank" type="button">Open blank window</button>
+        <button id="close" class="secondary" type="button">Close</button>
+      </div>
+      <h2>Plugins</h2>
+      <ul id="plugins"></ul>
+      <p id="empty" hidden>No Plugins found in the plugins directory.</p>
     </main>
     <script>
-      async function invoke(cmd) {
+      async function invoke(cmd, args) {
         const fn = window.__TAURI__?.core?.invoke;
-        if (fn) await fn(cmd);
+        if (!fn) return null;
+        return await fn(cmd, args);
       }
+
+      function renderPlugins(plugins) {
+        const list = document.getElementById("plugins");
+        const empty = document.getElementById("empty");
+        list.innerHTML = "";
+        if (!plugins || plugins.length === 0) {
+          empty.hidden = false;
+          return;
+        }
+        empty.hidden = true;
+        for (const plugin of plugins) {
+          const li = document.createElement("li");
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const name = document.createElement("div");
+          name.className = "name";
+          name.textContent = plugin.name;
+          const id = document.createElement("span");
+          id.className = "id";
+          id.textContent = `${plugin.id} · v${plugin.version}`;
+          meta.append(name, id);
+          const open = document.createElement("button");
+          open.type = "button";
+          open.textContent = "Open";
+          open.addEventListener("click", () => {
+            invoke("open_plugin", { id: plugin.id });
+          });
+          li.append(meta, open);
+          list.append(li);
+        }
+      }
+
       document.getElementById("open-blank").addEventListener("click", () => {
         invoke("open_blank_window");
       });
       document.getElementById("close").addEventListener("click", () => {
         invoke("close_launcher");
       });
+
+      invoke("list_plugins").then(renderPlugins);
     </script>
   </body>
 </html>

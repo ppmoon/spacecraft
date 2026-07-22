@@ -1,6 +1,7 @@
 //! Tauri-backed Platform — tray, windows, global shortcuts.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use tauri::{
@@ -21,6 +22,7 @@ struct TauriPlatformState {
     next_id: u64,
     shortcuts: HashMap<String, Shortcut>,
     trays: HashMap<String, TrayIcon>,
+    privileged: HashMap<String, bool>,
 }
 
 impl TauriPlatform {
@@ -31,23 +33,34 @@ impl TauriPlatform {
                 next_id: 0,
                 shortcuts: HashMap::new(),
                 trays: HashMap::new(),
+                privileged: HashMap::new(),
             }),
         }
     }
 
-    fn page_for(kind: WindowKind) -> &'static str {
+    fn page_for(kind: &WindowKind) -> &'static str {
         match kind {
             WindowKind::Launcher => "launcher.html",
             WindowKind::Palette => "palette.html",
             WindowKind::Blank => "blank.html",
+            WindowKind::PureUi { .. } => unreachable!("Pure-UI uses create_pure_ui_window"),
         }
     }
 
-    fn size_for(kind: WindowKind) -> (f64, f64) {
+    fn size_for(kind: &WindowKind) -> (f64, f64) {
         match kind {
             WindowKind::Palette => (560.0, 280.0),
-            WindowKind::Launcher => (420.0, 240.0),
-            WindowKind::Blank => (800.0, 600.0),
+            WindowKind::Launcher => (420.0, 320.0),
+            WindowKind::Blank | WindowKind::PureUi { .. } => (800.0, 600.0),
+        }
+    }
+
+    fn title_for(kind: &WindowKind) -> String {
+        match kind {
+            WindowKind::Launcher => "Launcher".into(),
+            WindowKind::Palette => "Command palette".into(),
+            WindowKind::Blank => "Blank window".into(),
+            WindowKind::PureUi { plugin_id } => plugin_id.clone(),
         }
     }
 }
@@ -119,23 +132,20 @@ impl Platform for TauriPlatform {
         let mut state = self.state.lock().expect("tauri platform");
         state.next_id += 1;
         let label = format!("win-{}", state.next_id);
+        state.privileged.insert(label.clone(), true);
         drop(state);
 
-        let (width, height) = Self::size_for(kind);
-        let url = WebviewUrl::App(Self::page_for(kind).into());
+        let (width, height) = Self::size_for(&kind);
+        let url = WebviewUrl::App(Self::page_for(&kind).into());
         let mut builder = WebviewWindowBuilder::new(&self.app, &label, url)
-            .title(match kind {
-                WindowKind::Launcher => "Launcher",
-                WindowKind::Palette => "Command palette",
-                WindowKind::Blank => "Blank window",
-            })
+            .title(Self::title_for(&kind))
             .inner_size(width, height)
-            .resizable(kind == WindowKind::Blank);
+            .resizable(matches!(kind, WindowKind::Blank));
 
-        if kind == WindowKind::Palette || kind == WindowKind::Launcher {
+        if matches!(kind, WindowKind::Palette | WindowKind::Launcher) {
             builder = builder.always_on_top(true);
         }
-        if kind == WindowKind::Palette {
+        if matches!(kind, WindowKind::Palette) {
             builder = builder.decorations(false);
         }
 
@@ -143,14 +153,45 @@ impl Platform for TauriPlatform {
         WindowId(label)
     }
 
+    fn create_pure_ui_window(&self, plugin_id: &str, ui_entry: &Path) -> WindowId {
+        let mut state = self.state.lock().expect("tauri platform");
+        state.next_id += 1;
+        let label = format!("plugin-{}-{}", plugin_id, state.next_id);
+        state.privileged.insert(label.clone(), false);
+        drop(state);
+
+        let file_url = url::Url::from_file_path(ui_entry)
+            .unwrap_or_else(|_| panic!("ui entry is not a valid file path: {ui_entry:?}"));
+        let kind = WindowKind::PureUi {
+            plugin_id: plugin_id.to_string(),
+        };
+        let (width, height) = Self::size_for(&kind);
+
+        WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::External(file_url))
+            .title(Self::title_for(&kind))
+            .inner_size(width, height)
+            .resizable(true)
+            .build()
+            .expect("create Pure-UI window");
+
+        WindowId(label)
+    }
+
     fn close_window(&self, id: &WindowId) {
         if let Some(win) = self.app.get_webview_window(&id.0) {
             let _ = win.close();
         }
+        let mut state = self.state.lock().expect("tauri platform");
+        state.privileged.remove(&id.0);
     }
 
     fn is_window_destroyed(&self, id: &WindowId) -> bool {
         self.app.get_webview_window(&id.0).is_none()
+    }
+
+    fn window_allows_privileged_apis(&self, id: &WindowId) -> bool {
+        let state = self.state.lock().expect("tauri platform");
+        state.privileged.get(&id.0).copied().unwrap_or(false)
     }
 
     fn register_shortcut(&self, accelerator: &str, handler: Box<dyn Fn() + Send + Sync>) {

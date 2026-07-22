@@ -12,3 +12,13 @@ commands.allow = ["close_launcher"]
 identifier = "allow-close-command-palette"
 description = "Allow the UI to close the command palette"
 commands.allow = ["close_command_palette"]
+
+[[permission]]
+identifier = "allow-list-plugins"
+description = "Allow the launcher to list discovered Plugins"
+commands.allow = ["list_plugins"]
+
+[[permission]]
+identifier = "allow-open-plugin"
+description = "Allow the launcher to open a discovered Plugin window"
+commands.allow = ["open_plugin"]
