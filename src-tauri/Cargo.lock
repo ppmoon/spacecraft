@@ -2836,6 +2836,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "url",
+ "uuid",
 ]
 
 [[package]]

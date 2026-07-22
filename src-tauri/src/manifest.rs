@@ -1,9 +1,11 @@
 //! Declarative Manifest for a Plugin package.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
@@ -13,12 +15,29 @@ pub struct Manifest {
     pub ui: String,
     pub window_type: WindowType,
     pub root: PathBuf,
+    /// Relative Sidecar entry; when set the Plugin is privileged.
+    pub sidecar: Option<String>,
+    pub permissions: ManifestPermissions,
+    pub contracts: HashMap<String, BusContract>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowType {
-    /// Local UI entry — Pure-UI Plugin (no Sidecar).
+    /// Local UI entry.
     Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ManifestPermissions {
+    pub emit: Vec<String>,
+    pub subscribe: Vec<String>,
+    pub call: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusContract {
+    pub request: Value,
+    pub response: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +47,12 @@ struct ManifestFile {
     version: String,
     ui: String,
     window: ManifestWindow,
+    #[serde(default)]
+    sidecar: Option<String>,
+    #[serde(default)]
+    permissions: Option<ManifestPermissionsFile>,
+    #[serde(default)]
+    contracts: Option<HashMap<String, BusContractFile>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,12 +61,35 @@ struct ManifestWindow {
     window_type: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ManifestPermissionsFile {
+    #[serde(default)]
+    emit: Vec<String>,
+    #[serde(default)]
+    subscribe: Vec<String>,
+    #[serde(default)]
+    call: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BusContractFile {
+    #[serde(default = "empty_object")]
+    request: Value,
+    #[serde(default = "empty_object")]
+    response: Value,
+}
+
+fn empty_object() -> Value {
+    Value::Object(Default::default())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     MissingFile,
     InvalidJson,
     InvalidField(&'static str),
     MissingUiEntry,
+    MissingSidecarEntry,
 }
 
 impl std::fmt::Display for ManifestError {
@@ -51,6 +99,7 @@ impl std::fmt::Display for ManifestError {
             ManifestError::InvalidJson => write!(f, "manifest.json is not valid JSON"),
             ManifestError::InvalidField(field) => write!(f, "manifest field invalid: {field}"),
             ManifestError::MissingUiEntry => write!(f, "ui entry file missing"),
+            ManifestError::MissingSidecarEntry => write!(f, "sidecar entry missing"),
         }
     }
 }
@@ -71,10 +120,45 @@ impl Manifest {
             return Err(ManifestError::InvalidField("window.type"));
         }
 
-        let ui_path = resolve_ui_entry(dir, &parsed.ui)?;
+        let ui_path = resolve_under_root(dir, &parsed.ui)?;
         if !ui_path.is_file() {
             return Err(ManifestError::MissingUiEntry);
         }
+
+        if let Some(sidecar) = &parsed.sidecar {
+            validate_non_empty(sidecar, "sidecar")?;
+            // Bare binary names (no path separators) are resolved by the Host at spawn time.
+            if sidecar.contains('/') || sidecar.contains('\\') {
+                let sidecar_path = resolve_under_root(dir, sidecar)?;
+                if !sidecar_path.exists() {
+                    return Err(ManifestError::MissingSidecarEntry);
+                }
+            }
+        }
+
+        let permissions = parsed
+            .permissions
+            .map(|p| ManifestPermissions {
+                emit: p.emit,
+                subscribe: p.subscribe,
+                call: p.call,
+            })
+            .unwrap_or_default();
+
+        let contracts = parsed
+            .contracts
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(topic, c)| {
+                (
+                    topic,
+                    BusContract {
+                        request: c.request,
+                        response: c.response,
+                    },
+                )
+            })
+            .collect();
 
         Ok(Self {
             id: parsed.id,
@@ -83,11 +167,22 @@ impl Manifest {
             ui: parsed.ui,
             window_type: WindowType::Local,
             root: dir.to_path_buf(),
+            sidecar: parsed.sidecar,
+            permissions,
+            contracts,
         })
     }
 
     pub fn ui_entry_path(&self) -> PathBuf {
         self.root.join(&self.ui)
+    }
+
+    pub fn sidecar_entry_path(&self) -> Option<PathBuf> {
+        self.sidecar.as_ref().map(|s| self.root.join(s))
+    }
+
+    pub fn is_privileged(&self) -> bool {
+        self.sidecar.is_some()
     }
 }
 
@@ -98,16 +193,9 @@ fn validate_non_empty(value: &str, field: &'static str) -> Result<(), ManifestEr
     Ok(())
 }
 
-fn resolve_ui_entry(root: &Path, ui: &str) -> Result<PathBuf, ManifestError> {
-    let candidate = root.join(ui);
-    let root_canon = root
-        .canonicalize()
-        .unwrap_or_else(|_| root.to_path_buf());
-    let ui_canon = candidate
-        .canonicalize()
-        .unwrap_or_else(|_| candidate.clone());
-    if !ui_canon.starts_with(&root_canon) {
-        return Err(ManifestError::InvalidField("ui"));
+fn resolve_under_root(root: &Path, relative: &str) -> Result<PathBuf, ManifestError> {
+    if relative.split(['/', '\\']).any(|p| p == "..") {
+        return Err(ManifestError::InvalidField("path"));
     }
-    Ok(candidate)
+    Ok(root.join(relative))
 }

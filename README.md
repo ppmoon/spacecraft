@@ -25,7 +25,10 @@ npm start
 
 This launches the Tauri Host. The Host stays in the system tray / menu bar (no main window on boot).
 
-By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT_PLUGINS_DIR`). The fixture Pure-UI Plugin lives at `plugins/hello/`.
+By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT_PLUGINS_DIR`). Fixtures:
+
+- `plugins/hello/` — Pure-UI Plugin
+- `plugins/echo/` — privileged Plugin (Sidecar + permissioned Bus)
 
 ### Host actions
 
@@ -35,6 +38,7 @@ By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT
 | Open command palette | `Ctrl/Cmd+K` or tray menu → **Command Palette** |
 | Open blank window | Command palette → **Open blank window** (or launcher button) |
 | Open Hello Plugin | Launcher → Plugins → **Hello** → **Open** |
+| Open Echo Plugin | Launcher → Plugins → **Echo** → **Open** (Sidecar + Bus) |
 | Quit | Tray menu → **Quit** |
 
 ## Test
@@ -51,12 +55,12 @@ Manual smoke on Windows, macOS, and the current test Linux:
 
 1. `npm install && npm start`
 2. Confirm tray / menu-bar icon appears
-3. Open launcher from the tray; confirm **Hello** is listed; open it
+3. Open launcher from the tray; confirm **Hello** / **Echo** are listed; open Echo and try ping/reflect
 4. Press `Ctrl+K` / `Cmd+K`; choose **Open blank window**
 5. Quit from the tray
 
 ```bash
-npm run smoke   # opens launcher + palette + blank + hello Plugin, then quits
+npm run smoke   # opens launcher + palette + blank + hello + echo, then quits
 ```
 
-See `docs/smoke/phase-1-01.md` and `docs/smoke/phase-1-02.md` for platform notes.
+See `docs/smoke/phase-1-01.md`, `docs/smoke/phase-1-02.md`, and `docs/smoke/phase-1-03.md` for platform notes.

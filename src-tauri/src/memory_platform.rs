@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::platform::{Platform, TrayId, WindowId, WindowKind};
+use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 
 struct MemoryWindow {
     destroyed: bool,
@@ -12,11 +12,17 @@ struct MemoryWindow {
     ui_entry: Option<PathBuf>,
 }
 
+struct MemorySidecar {
+    plugin_id: String,
+    running: bool,
+}
+
 #[derive(Default)]
 struct MemoryState {
     next_id: u64,
     trays: HashMap<String, ()>,
     windows: HashMap<String, MemoryWindow>,
+    sidecars: HashMap<String, MemorySidecar>,
     shortcuts: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
     quit_called: bool,
     tray_quit: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -59,6 +65,16 @@ impl MemoryPlatform {
             .windows
             .get(&id.0)
             .and_then(|w| w.ui_entry.clone())
+    }
+
+    pub fn running_sidecar_count_for(&self, plugin_id: &str) -> usize {
+        self.state
+            .lock()
+            .expect("memory platform")
+            .sidecars
+            .values()
+            .filter(|s| s.plugin_id == plugin_id && s.running)
+            .count()
     }
 }
 
@@ -131,6 +147,36 @@ impl Platform for MemoryPlatform {
             .windows
             .get(&id.0)
             .map(|w| w.privileged && !w.destroyed)
+            .unwrap_or(false)
+    }
+
+    fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {
+        let mut state = self.state.lock().expect("memory platform");
+        state.next_id += 1;
+        let id = format!("sidecar-{}-{}", plugin_id, state.next_id);
+        state.sidecars.insert(
+            id.clone(),
+            MemorySidecar {
+                plugin_id: plugin_id.to_string(),
+                running: true,
+            },
+        );
+        SidecarId(id)
+    }
+
+    fn stop_sidecar(&self, id: &SidecarId) {
+        let mut state = self.state.lock().expect("memory platform");
+        if let Some(s) = state.sidecars.get_mut(&id.0) {
+            s.running = false;
+        }
+    }
+
+    fn is_sidecar_running(&self, id: &SidecarId) -> bool {
+        let state = self.state.lock().expect("memory platform");
+        state
+            .sidecars
+            .get(&id.0)
+            .map(|s| s.running)
             .unwrap_or(false)
     }
 

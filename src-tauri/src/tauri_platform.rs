@@ -11,7 +11,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::platform::{Platform, TrayId, WindowId, WindowKind};
+use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 
 pub struct TauriPlatform {
     app: AppHandle,
@@ -23,6 +23,7 @@ struct TauriPlatformState {
     shortcuts: HashMap<String, Shortcut>,
     trays: HashMap<String, TrayIcon>,
     privileged: HashMap<String, bool>,
+    sidecars: HashMap<String, ()>,
 }
 
 impl TauriPlatform {
@@ -34,6 +35,7 @@ impl TauriPlatform {
                 shortcuts: HashMap::new(),
                 trays: HashMap::new(),
                 privileged: HashMap::new(),
+                sidecars: HashMap::new(),
             }),
         }
     }
@@ -192,6 +194,25 @@ impl Platform for TauriPlatform {
     fn window_allows_privileged_apis(&self, id: &WindowId) -> bool {
         let state = self.state.lock().expect("tauri platform");
         state.privileged.get(&id.0).copied().unwrap_or(false)
+    }
+
+    fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {
+        let mut state = self.state.lock().expect("tauri platform");
+        state.next_id += 1;
+        let id = format!("sidecar-{}-{}", plugin_id, state.next_id);
+        // Lifecycle bookkeeping only — Host owns the out-of-process Child via sidecar_bridge.
+        state.sidecars.insert(id.clone(), ());
+        SidecarId(id)
+    }
+
+    fn stop_sidecar(&self, id: &SidecarId) {
+        let mut state = self.state.lock().expect("tauri platform");
+        state.sidecars.remove(&id.0);
+    }
+
+    fn is_sidecar_running(&self, id: &SidecarId) -> bool {
+        let state = self.state.lock().expect("tauri platform");
+        state.sidecars.contains_key(&id.0)
     }
 
     fn register_shortcut(&self, accelerator: &str, handler: Box<dyn Fn() + Send + Sync>) {

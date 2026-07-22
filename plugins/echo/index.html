@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Echo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8f7;
+        --ink: #16343c;
+        --accent: #2a6f6a;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 10% 0%, #d5ebe6, var(--bg) 50%);
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      main {
+        padding: 1.5rem;
+        max-width: 28rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.4rem;
+      }
+      p {
+        margin: 0 0 1rem;
+        opacity: 0.8;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin-bottom: 0.35rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.55rem 0.65rem;
+        border: 1px solid #b7c9c6;
+        border-radius: 0.35rem;
+        font: inherit;
+        margin-bottom: 0.75rem;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        background: var(--accent);
+        color: #f4fffd;
+        font: inherit;
+        font-weight: 600;
+        padding: 0.55rem 0.9rem;
+        border-radius: 0.35rem;
+        cursor: pointer;
+        margin-right: 0.4rem;
+      }
+      pre {
+        margin-top: 1rem;
+        padding: 0.75rem;
+        background: #e7f0ee;
+        border-radius: 0.35rem;
+        min-height: 3rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Echo</h1>
+      <p>Privileged Plugin — UI uses a Host-scoped Bus proxy only.</p>
+      <label for="message">Message</label>
+      <input id="message" value="hello from UI" />
+      <button id="ping" type="button">Emit ping</button>
+      <button id="reflect" type="button">Call reflect</button>
+      <pre id="log">Ready.</pre>
+    </main>
+    <script>
+      const log = (text) => {
+        document.getElementById("log").textContent = text;
+      };
+      async function invoke(cmd, args) {
+        const fn = window.__TAURI__?.core?.invoke;
+        if (!fn) {
+          log("Host proxy unavailable");
+          return null;
+        }
+        return await fn(cmd, args);
+      }
+      document.getElementById("ping").addEventListener("click", async () => {
+        const message = document.getElementById("message").value;
+        try {
+          await invoke("bus_emit", { topic: "echo.ping", payload: { message } });
+          log("emit echo.ping ok");
+        } catch (err) {
+          log(String(err));
+        }
+      });
+      document.getElementById("reflect").addEventListener("click", async () => {
+        const value = document.getElementById("message").value;
+        try {
+          const result = await invoke("bus_call", {
+            topic: "echo.reflect",
+            payload: { value },
+          });
+          log("reflect → " + JSON.stringify(result));
+        } catch (err) {
+          log(String(err));
+        }
+      });
+      invoke("bus_subscribe", { topic: "echo.pong" })
+        .then(() => log("subscribed to echo.pong"))
+        .catch((err) => log(String(err)));
+    </script>
+  </body>
+</html>
