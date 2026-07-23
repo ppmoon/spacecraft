@@ -400,7 +400,8 @@ impl Host {
             }
         }
         let instance_id = uuid::Uuid::new_v4().to_string();
-        self.open_plugin_instance(id, &instance_id, None)
+        self.open_plugin_instance(id, &instance_id, None)?;
+        Ok(())
     }
 
     pub fn sidecar_running_for(&self, plugin_id: &str) -> bool {
@@ -634,17 +635,17 @@ impl Host {
 
         let mut labels = Vec::new();
         for plugin_id in plugin_ids {
-            self.open_plugin(plugin_id)?;
-            let label = self
-                .open_windows()
-                .into_iter()
-                .rev()
-                .find_map(|(id, k)| match k {
-                    WindowKind::PureUi { plugin_id: pid } if pid == *plugin_id => Some(id),
-                    _ => None,
-                })
-                .ok_or_else(|| format!("failed to open Plugin window: {plugin_id}"))?;
-            labels.push(label);
+            {
+                let state = self.inner.lock().expect("host");
+                if !state.plugins.contains_key(plugin_id) {
+                    return Err(format!("unknown Plugin: {plugin_id}"));
+                }
+            }
+            let instance_id = uuid::Uuid::new_v4().to_string();
+            let window_id = self
+                .open_plugin_instance(plugin_id, &instance_id, None)?
+                .ok_or_else(|| format!("unknown Plugin: {plugin_id}"))?;
+            labels.push(window_id.0);
         }
         self.create_window_group(name, &labels)
     }
@@ -699,7 +700,7 @@ impl Host {
                             .any(|e| e.instance_id == instance_id)
                     };
                     if !already_open {
-                        self.open_plugin_instance(&plugin_id, &instance_id, None)?;
+                        let _ = self.open_plugin_instance(&plugin_id, &instance_id, None)?;
                     }
                 }
             }
@@ -856,7 +857,6 @@ impl Host {
                     plugin_id,
                     instance_id,
                 } => {
-                    // Partial Workspace: skip windows that cannot reopen; boot continues.
                     let _ = self.open_plugin_instance(
                         &plugin_id,
                         &instance_id,
@@ -886,12 +886,12 @@ impl Host {
         plugin_id: &str,
         instance_id: &str,
         geometry: Option<WindowGeometry>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<WindowId>, String> {
         let mut state = self.inner.lock().expect("host");
         Self::prune_locked(&self.platform, &mut state);
         let Some(manifest) = state.plugins.get(plugin_id).cloned() else {
             // Missing Plugin after restore — skip gracefully.
-            return Ok(());
+            return Ok(None);
         };
 
         if manifest.is_privileged() && !state.sidecars.contains_key(plugin_id) {
@@ -921,11 +921,11 @@ impl Host {
             self.platform.set_window_geometry(&window, &geometry);
         }
         state.plugin_windows.push(PluginWindowEntry {
-            id: window,
+            id: window.clone(),
             plugin_id: plugin_id.to_string(),
             instance_id: instance_id.to_string(),
         });
-        Ok(())
+        Ok(Some(window))
     }
 
     /// Plugin instance identities currently open (plugin_id, instance_id).

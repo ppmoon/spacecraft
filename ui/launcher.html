@@ -220,8 +220,14 @@
       <div id="group-candidates"></div>
       <div class="actions">
         <button id="create-group" type="button">Create from open windows</button>
+      </div>
+      <p style="margin: 0.75rem 0 0.35rem; font-size: 0.85rem; color: var(--muted)">
+        Or declare a Window Group while opening Plugins:
+      </p>
+      <div id="declare-candidates"></div>
+      <div class="actions">
         <button id="declare-group" class="secondary" type="button">
-          Open hello+echo as group
+          Open selected Plugins as Window Group
         </button>
       </div>
       <ul id="groups"></ul>
@@ -362,6 +368,32 @@
         await renderGroupCandidates();
       }
 
+      async function renderDeclareCandidates(plugins) {
+        const box = document.getElementById("declare-candidates");
+        box.innerHTML = "";
+        if (!plugins || plugins.length === 0) {
+          const hint = document.createElement("p");
+          hint.style.margin = "0";
+          hint.style.color = "var(--muted)";
+          hint.style.fontSize = "0.9rem";
+          hint.textContent = "No Plugins available to declare.";
+          box.append(hint);
+          return;
+        }
+        for (const plugin of plugins) {
+          const label = document.createElement("label");
+          label.className = "check";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = plugin.id;
+          input.checked = plugin.id === "hello" || plugin.id === "echo";
+          const text = document.createElement("span");
+          text.textContent = `${plugin.name} (${plugin.id})`;
+          label.append(input, text);
+          box.append(label);
+        }
+      }
+
       function renderProposal(proposal) {
         currentProposal = proposal;
         const box = document.getElementById("proposal");
@@ -392,6 +424,7 @@
       async function refreshPlugins() {
         const plugins = await invoke("list_plugins");
         renderPlugins(plugins);
+        await renderDeclareCandidates(plugins);
       }
 
       document.getElementById("open-blank").addEventListener("click", async () => {
@@ -420,11 +453,14 @@
       });
       document.getElementById("declare-group").addEventListener("click", async () => {
         const name =
-          document.getElementById("group-name").value.trim() || "Hello + Echo";
+          document.getElementById("group-name").value.trim() || "New Window Group";
+        const pluginIds = [
+          ...document.querySelectorAll("#declare-candidates input:checked"),
+        ].map((el) => el.value);
         try {
           const group = await invoke("open_window_group_declared", {
             name,
-            pluginIds: ["hello", "echo"],
+            pluginIds,
           });
           setStatus(`Opened Window Group “${group.name}”.`);
           await refreshGroupsUi();

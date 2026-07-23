@@ -105,13 +105,13 @@
         ];
         for (const group of groups) {
           items.push({
-            label: `Open group: ${group.name}`,
+            label: `Open Window Group: ${group.name}`,
             run: async () => {
               await invoke("open_window_group", { groupId: group.id });
             },
           });
           items.push({
-            label: `Close group: ${group.name}`,
+            label: `Close Window Group: ${group.name}`,
             run: async () => {
               await invoke("close_window_group", { groupId: group.id });
             },
