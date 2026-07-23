@@ -250,7 +250,10 @@
           const kind = document.createElement("span");
           kind.className = "kind";
           kind.textContent = item.kind;
-          li.append(kind, document.createTextNode(item.detail));
+          const detail = item.sensitive
+            ? `${item.detail} (sensitive)`
+            : item.detail;
+          li.append(kind, document.createTextNode(detail));
           list.append(li);
         }
       }

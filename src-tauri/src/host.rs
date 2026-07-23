@@ -146,9 +146,11 @@ impl Host {
     /// Remembers `dir` so later launcher opens re-scan (drop-in discovery).
     pub fn load_plugins_from(&self, dir: &Path) {
         let discovered = Self::scan_plugins_dir(dir);
+        let grants = load_grants(dir);
         let mut state = self.inner.lock().expect("host");
         state.plugins_dir = Some(dir.to_path_buf());
         state.plugins = discovered;
+        state.confirmed_grants = grants;
     }
 
     fn scan_plugins_dir(dir: &Path) -> HashMap<String, Manifest> {
@@ -269,6 +271,7 @@ impl Host {
 
         commit_staged_install(&staging, &plugins_dir, &plugin_id)?;
         let _ = std::fs::remove_dir_all(&staging);
+        persist_grants(&plugins_dir, &plugin_id, &grants)?;
 
         let mut state = self.inner.lock().expect("host");
         state.confirmed_grants.insert(plugin_id.clone(), grants);
@@ -565,6 +568,30 @@ impl Host {
             platform.stop_sidecar(&sidecar_id);
         }
     }
+}
+
+fn grants_file(plugins_dir: &Path) -> PathBuf {
+    plugins_dir.join(".spacecraft-grants.json")
+}
+
+fn load_grants(plugins_dir: &Path) -> HashMap<String, Vec<PermissionItem>> {
+    let path = grants_file(plugins_dir);
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn persist_grants(
+    plugins_dir: &Path,
+    plugin_id: &str,
+    grants: &[PermissionItem],
+) -> Result<(), String> {
+    let mut all = load_grants(plugins_dir);
+    all.insert(plugin_id.to_string(), grants.to_vec());
+    let path = grants_file(plugins_dir);
+    let raw = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
 fn resolve_sidecar_binary(manifest: &Manifest) -> Result<PathBuf, String> {
@@ -1054,6 +1081,12 @@ mod tests {
         assert!(host.listed_plugins().iter().any(|p| p.id == "notes"));
         assert!(host.confirmed_grants_for("notes").is_some());
         assert!(plugins_dir.join("notes/manifest.json").is_file());
+        assert!(plugins_dir.join(".spacecraft-grants.json").is_file());
+
+        // Grants survive Host reload from the same plugins dir.
+        let (host2, _) = boot();
+        host2.load_plugins_from(&plugins_dir);
+        assert!(host2.confirmed_grants_for("notes").is_some());
         let _ = fs::remove_dir_all(&plugins_dir);
     }
 
