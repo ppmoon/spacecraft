@@ -16,6 +16,10 @@
     "allow-close-launcher",
     "allow-close-command-palette",
     "allow-list-plugins",
-    "allow-open-plugin"
+    "allow-open-plugin",
+    "allow-propose-install",
+    "allow-confirm-install",
+    "allow-decline-install",
+    "allow-pending-install"
   ]
 }

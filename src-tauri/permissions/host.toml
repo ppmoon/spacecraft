@@ -24,6 +24,26 @@ description = "Allow the launcher to open a discovered Plugin window"
 commands.allow = ["open_plugin"]
 
 [[permission]]
+identifier = "allow-propose-install"
+description = "Allow proposing a local Plugin install"
+commands.allow = ["propose_install"]
+
+[[permission]]
+identifier = "allow-confirm-install"
+description = "Allow confirming a pending Plugin install"
+commands.allow = ["confirm_install"]
+
+[[permission]]
+identifier = "allow-decline-install"
+description = "Allow declining a pending Plugin install"
+commands.allow = ["decline_install"]
+
+[[permission]]
+identifier = "allow-pending-install"
+description = "Allow reading the pending Plugin install proposal"
+commands.allow = ["pending_install"]
+
+[[permission]]
 identifier = "allow-bus-emit"
 description = "Allow a Plugin window to emit on the scoped Bus proxy"
 commands.allow = ["bus_emit"]

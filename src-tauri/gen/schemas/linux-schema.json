@@ -207,6 +207,18 @@
           "markdownDescription": "Allow the UI to close the launcher"
         },
         {
+          "description": "Allow confirming a pending Plugin install",
+          "type": "string",
+          "const": "allow-confirm-install",
+          "markdownDescription": "Allow confirming a pending Plugin install"
+        },
+        {
+          "description": "Allow declining a pending Plugin install",
+          "type": "string",
+          "const": "allow-decline-install",
+          "markdownDescription": "Allow declining a pending Plugin install"
+        },
+        {
           "description": "Allow the launcher to list discovered Plugins",
           "type": "string",
           "const": "allow-list-plugins",
@@ -223,6 +235,18 @@
           "type": "string",
           "const": "allow-open-plugin",
           "markdownDescription": "Allow the launcher to open a discovered Plugin window"
+        },
+        {
+          "description": "Allow reading the pending Plugin install proposal",
+          "type": "string",
+          "const": "allow-pending-install",
+          "markdownDescription": "Allow reading the pending Plugin install proposal"
+        },
+        {
+          "description": "Allow proposing a local Plugin install",
+          "type": "string",
+          "const": "allow-propose-install",
+          "markdownDescription": "Allow proposing a local Plugin install"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

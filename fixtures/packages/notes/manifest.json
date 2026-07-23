@@ -1,0 +1,48 @@
+{
+  "id": "notes",
+  "name": "Notes",
+  "version": "0.1.0",
+  "ui": "index.html",
+  "window": {
+    "type": "local"
+  },
+  "signature": "reserved-not-verified",
+  "permissions": {
+    "emit": ["notes.saved"],
+    "subscribe": ["notes.opened"],
+    "call": ["notes.save"]
+  },
+  "contracts": {
+    "notes.saved": {
+      "request": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "type": "string" } }
+      },
+      "response": { "type": "object" }
+    },
+    "notes.opened": {
+      "request": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "type": "string" } }
+      },
+      "response": { "type": "object" }
+    },
+    "notes.save": {
+      "request": {
+        "type": "object",
+        "required": ["id", "body"],
+        "properties": {
+          "id": { "type": "string" },
+          "body": { "type": "string" }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": { "ok": { "type": "boolean" } }
+      }
+    }
+  }
+}

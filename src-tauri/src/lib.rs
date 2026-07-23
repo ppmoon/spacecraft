@@ -1,5 +1,6 @@
 mod bus;
 mod host;
+mod install;
 mod manifest;
 mod memory_platform;
 mod platform;
@@ -7,6 +8,7 @@ mod sidecar_bridge;
 mod tauri_platform;
 
 pub use host::{Host, ListedPlugin};
+pub use install::InstallProposal;
 pub use memory_platform::MemoryPlatform;
 pub use platform::{Platform, TrayId, WindowId, WindowKind};
 
@@ -68,6 +70,36 @@ fn open_plugin(id: String) -> Result<(), String> {
     with_host(|h| h.open_plugin(&id))
 }
 
+#[tauri::command]
+fn propose_install(path: String) -> Result<InstallProposal, String> {
+    let source = PathBuf::from(&path);
+    with_host(|h| {
+        if source
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            h.propose_install_from_zip(&source)
+        } else {
+            h.propose_install_from_folder(&source)
+        }
+    })
+}
+
+#[tauri::command]
+fn confirm_install(proposal_id: String) -> Result<ListedPlugin, String> {
+    with_host(|h| h.confirm_install(&proposal_id))
+}
+
+#[tauri::command]
+fn decline_install(proposal_id: String) -> Result<(), String> {
+    with_host(|h| h.decline_install(&proposal_id))
+}
+
+#[tauri::command]
+fn pending_install() -> Option<InstallProposal> {
+    with_host(|h| h.pending_install())
+}
+
 /// Scoped Bus emit — window identity selects the Plugin; no raw global Bus.
 #[tauri::command]
 fn bus_emit(window: WebviewWindow, topic: String, payload: Value) -> Result<(), String> {
@@ -113,6 +145,10 @@ pub fn run() {
             close_command_palette,
             list_plugins,
             open_plugin,
+            propose_install,
+            confirm_install,
+            decline_install,
+            pending_install,
             bus_emit,
             bus_call,
             bus_subscribe
