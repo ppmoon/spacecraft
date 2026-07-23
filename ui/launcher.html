@@ -79,14 +79,16 @@
         border-radius: 0.4rem;
         margin-bottom: 0.5rem;
       }
-      #plugins {
+      #plugins,
+      #groups {
         list-style: none;
         margin: 0;
         padding: 0;
         display: grid;
         gap: 0.4rem;
       }
-      #plugins li {
+      #plugins li,
+      #groups li {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -95,20 +97,41 @@
         padding: 0.55rem 0.7rem;
         border-radius: 0.4rem;
       }
-      #plugins .meta {
+      #plugins .meta,
+      #groups .meta {
         min-width: 0;
       }
-      #plugins .name {
+      #plugins .name,
+      #groups .name {
         font-weight: 600;
       }
-      #plugins .id {
+      #plugins .id,
+      #groups .id {
         display: block;
         font-size: 0.8rem;
         color: var(--muted);
       }
-      #empty {
+      #groups .row-actions {
+        display: flex;
+        gap: 0.35rem;
+        flex-shrink: 0;
+      }
+      #empty,
+      #groups-empty {
         color: var(--muted);
         font-size: 0.9rem;
+      }
+      label.check {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.85rem;
+        margin: 0.25rem 0;
+      }
+      #group-candidates {
+        margin: 0.35rem 0 0.6rem;
+        max-height: 7rem;
+        overflow: auto;
       }
       #proposal {
         background: var(--panel);
@@ -186,6 +209,29 @@
       <h2>Plugins</h2>
       <ul id="plugins"></ul>
       <p id="empty" hidden>No Plugins found in the plugins directory.</p>
+
+      <h2>Window Groups</h2>
+      <input
+        id="group-name"
+        type="text"
+        placeholder="Group name"
+        spellcheck="false"
+      />
+      <div id="group-candidates"></div>
+      <div class="actions">
+        <button id="create-group" type="button">Create from open windows</button>
+      </div>
+      <p style="margin: 0.75rem 0 0.35rem; font-size: 0.85rem; color: var(--muted)">
+        Or declare a Window Group while opening Plugins:
+      </p>
+      <div id="declare-candidates"></div>
+      <div class="actions">
+        <button id="declare-group" class="secondary" type="button">
+          Open selected Plugins as Window Group
+        </button>
+      </div>
+      <ul id="groups"></ul>
+      <p id="groups-empty" hidden>No Window Groups yet.</p>
     </main>
     <script>
       let currentProposal = null;
@@ -223,11 +269,128 @@
           const open = document.createElement("button");
           open.type = "button";
           open.textContent = "Open";
-          open.addEventListener("click", () => {
-            invoke("open_plugin", { id: plugin.id });
+          open.addEventListener("click", async () => {
+            await invoke("open_plugin", { id: plugin.id });
+            await refreshGroupsUi();
           });
           li.append(meta, open);
           list.append(li);
+        }
+      }
+
+      function renderGroups(groups) {
+        const list = document.getElementById("groups");
+        const empty = document.getElementById("groups-empty");
+        list.innerHTML = "";
+        if (!groups || groups.length === 0) {
+          empty.hidden = false;
+          return;
+        }
+        empty.hidden = true;
+        for (const group of groups) {
+          const li = document.createElement("li");
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const name = document.createElement("div");
+          name.className = "name";
+          name.textContent = group.name;
+          const id = document.createElement("span");
+          id.className = "id";
+          id.textContent = `${group.memberCount} members`;
+          meta.append(name, id);
+          const actions = document.createElement("div");
+          actions.className = "row-actions";
+          const open = document.createElement("button");
+          open.type = "button";
+          open.textContent = "Open";
+          open.addEventListener("click", async () => {
+            try {
+              await invoke("open_window_group", { groupId: group.id });
+              setStatus(`Opened Window Group “${group.name}”.`);
+              await refreshGroupsUi();
+            } catch (err) {
+              setStatus(String(err));
+            }
+          });
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "secondary";
+          close.textContent = "Close";
+          close.addEventListener("click", async () => {
+            try {
+              await invoke("close_window_group", { groupId: group.id });
+              setStatus(`Closed Window Group “${group.name}”.`);
+              await refreshGroupsUi();
+            } catch (err) {
+              setStatus(String(err));
+            }
+          });
+          actions.append(open, close);
+          li.append(meta, actions);
+          list.append(li);
+        }
+      }
+
+      async function renderGroupCandidates() {
+        const box = document.getElementById("group-candidates");
+        box.innerHTML = "";
+        const windows = (await invoke("list_content_windows")) || [];
+        if (windows.length === 0) {
+          const hint = document.createElement("p");
+          hint.style.margin = "0";
+          hint.style.color = "var(--muted)";
+          hint.style.fontSize = "0.9rem";
+          hint.textContent = "Open Plugins or a blank window first.";
+          box.append(hint);
+          return;
+        }
+        for (const win of windows) {
+          const label = document.createElement("label");
+          label.className = "check";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = win.label;
+          input.checked = true;
+          const text = document.createElement("span");
+          const shortId = (win.instanceId || "").slice(0, 8);
+          text.textContent =
+            win.kind === "plugin"
+              ? `Plugin ${win.pluginId} (${shortId}…)`
+              : `Blank (${shortId}…)`;
+          label.append(input, text);
+          box.append(label);
+        }
+      }
+
+      async function refreshGroupsUi() {
+        const groups = await invoke("list_window_groups");
+        renderGroups(groups);
+        await renderGroupCandidates();
+      }
+
+      async function renderDeclareCandidates(plugins) {
+        const box = document.getElementById("declare-candidates");
+        box.innerHTML = "";
+        if (!plugins || plugins.length === 0) {
+          const hint = document.createElement("p");
+          hint.style.margin = "0";
+          hint.style.color = "var(--muted)";
+          hint.style.fontSize = "0.9rem";
+          hint.textContent = "No Plugins available to declare.";
+          box.append(hint);
+          return;
+        }
+        for (const plugin of plugins) {
+          const label = document.createElement("label");
+          label.className = "check";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = plugin.id;
+          input.checked = plugin.id === "hello" || plugin.id === "echo";
+          const text = document.createElement("span");
+          text.textContent = `${plugin.name} (${plugin.id})`;
+          label.append(input, text);
+          box.append(label);
         }
       }
 
@@ -261,13 +424,49 @@
       async function refreshPlugins() {
         const plugins = await invoke("list_plugins");
         renderPlugins(plugins);
+        await renderDeclareCandidates(plugins);
       }
 
-      document.getElementById("open-blank").addEventListener("click", () => {
-        invoke("open_blank_window");
+      document.getElementById("open-blank").addEventListener("click", async () => {
+        await invoke("open_blank_window");
+        await refreshGroupsUi();
       });
       document.getElementById("close").addEventListener("click", () => {
         invoke("close_launcher");
+      });
+      document.getElementById("create-group").addEventListener("click", async () => {
+        const name = document.getElementById("group-name").value.trim();
+        const labels = [
+          ...document.querySelectorAll("#group-candidates input:checked"),
+        ].map((el) => el.value);
+        try {
+          const group = await invoke("create_window_group", {
+            name,
+            windowLabels: labels,
+          });
+          setStatus(`Created Window Group “${group.name}”.`);
+          document.getElementById("group-name").value = "";
+          await refreshGroupsUi();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      });
+      document.getElementById("declare-group").addEventListener("click", async () => {
+        const name =
+          document.getElementById("group-name").value.trim() || "New Window Group";
+        const pluginIds = [
+          ...document.querySelectorAll("#declare-candidates input:checked"),
+        ].map((el) => el.value);
+        try {
+          const group = await invoke("open_window_group_declared", {
+            name,
+            pluginIds,
+          });
+          setStatus(`Opened Window Group “${group.name}”.`);
+          await refreshGroupsUi();
+        } catch (err) {
+          setStatus(String(err));
+        }
       });
       document.getElementById("propose").addEventListener("click", async () => {
         const path = document.getElementById("install-path").value.trim();
@@ -312,6 +511,7 @@
       });
 
       refreshPlugins();
+      refreshGroupsUi();
     </script>
   </body>
 </html>

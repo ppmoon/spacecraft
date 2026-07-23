@@ -1,4 +1,4 @@
-//! Host-persisted Workspace: window layout + Plugin instance identities only.
+//! Host-persisted Workspace: window layout + Plugin instance identities + Window Groups.
 //! Plugins own their own business state — never snapshotted here.
 
 use std::fs;
@@ -28,7 +28,12 @@ impl Default for WindowGeometry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WorkspaceWindowKind {
-    Blank,
+    #[serde(rename_all = "camelCase")]
+    Blank {
+        /// Stable identity so Window Groups can rebind blanks across restarts.
+        #[serde(default)]
+        blank_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     Plugin {
         plugin_id: String,
@@ -42,10 +47,32 @@ pub struct WorkspaceWindow {
     pub geometry: WindowGeometry,
 }
 
+/// Named Window Group membership recipe (survives member windows being closed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum WorkspaceGroupMember {
+    #[serde(rename_all = "camelCase")]
+    Blank { blank_id: String },
+    #[serde(rename_all = "camelCase")]
+    Plugin {
+        plugin_id: String,
+        instance_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceGroup {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<WorkspaceGroupMember>,
+}
+
 /// Serializable Workspace snapshot owned by the Host.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Workspace {
     pub windows: Vec<WorkspaceWindow>,
+    #[serde(default)]
+    pub groups: Vec<WorkspaceGroup>,
 }
 
 impl Workspace {
@@ -105,12 +132,14 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_layout_and_instance_ids() {
+    fn round_trip_preserves_layout_groups_and_instance_ids() {
         let path = temp_path();
         let ws = Workspace {
             windows: vec![
                 WorkspaceWindow {
-                    kind: WorkspaceWindowKind::Blank,
+                    kind: WorkspaceWindowKind::Blank {
+                        blank_id: "blank-1".into(),
+                    },
                     geometry: WindowGeometry {
                         x: 10.0,
                         y: 20.0,
@@ -131,10 +160,49 @@ mod tests {
                     },
                 },
             ],
+            groups: vec![WorkspaceGroup {
+                id: "g-1".into(),
+                name: "Morning".into(),
+                members: vec![
+                    WorkspaceGroupMember::Blank {
+                        blank_id: "blank-1".into(),
+                    },
+                    WorkspaceGroupMember::Plugin {
+                        plugin_id: "hello".into(),
+                        instance_id: "inst-1".into(),
+                    },
+                ],
+            }],
         };
         ws.save_to_path(&path).unwrap();
         let loaded = Workspace::load_from_path(&path).unwrap().unwrap();
         assert_eq!(loaded, ws);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_workspace_without_groups_still_loads() {
+        let path = temp_path();
+        fs::write(
+            &path,
+            r#"{
+              "windows": [
+                { "kind": { "type": "blank" }, "geometry": { "x": 1, "y": 2, "width": 3, "height": 4 } },
+                {
+                  "kind": { "type": "plugin", "pluginId": "hello", "instanceId": "i1" },
+                  "geometry": { "x": 5, "y": 6, "width": 7, "height": 8 }
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let loaded = Workspace::load_from_path(&path).unwrap().unwrap();
+        assert!(loaded.groups.is_empty());
+        assert_eq!(loaded.windows.len(), 2);
+        assert!(matches!(
+            &loaded.windows[0].kind,
+            WorkspaceWindowKind::Blank { blank_id } if blank_id.is_empty()
+        ));
         let _ = fs::remove_file(&path);
     }
 }
