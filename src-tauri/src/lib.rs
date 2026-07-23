@@ -8,7 +8,7 @@ mod sidecar_bridge;
 mod tauri_platform;
 mod workspace;
 
-pub use host::{Host, ListedPlugin};
+pub use host::{Host, ListedContentWindow, ListedPlugin, ListedWindowGroup};
 pub use install::InstallProposal;
 pub use memory_platform::MemoryPlatform;
 pub use platform::{Platform, TrayId, WindowId, WindowKind};
@@ -69,6 +69,39 @@ fn list_plugins() -> Vec<ListedPlugin> {
 #[tauri::command]
 fn open_plugin(id: String) -> Result<(), String> {
     with_host(|h| h.open_plugin(&id))
+}
+
+#[tauri::command]
+fn list_content_windows() -> Vec<ListedContentWindow> {
+    with_host(|h| h.list_content_windows())
+}
+
+#[tauri::command]
+fn list_window_groups() -> Vec<ListedWindowGroup> {
+    with_host(|h| h.list_window_groups())
+}
+
+#[tauri::command]
+fn create_window_group(name: String, window_labels: Vec<String>) -> Result<ListedWindowGroup, String> {
+    with_host(|h| h.create_window_group(&name, &window_labels))
+}
+
+#[tauri::command]
+fn open_window_group_declared(
+    name: String,
+    plugin_ids: Vec<String>,
+) -> Result<ListedWindowGroup, String> {
+    with_host(|h| h.open_window_group_declared(&name, &plugin_ids))
+}
+
+#[tauri::command]
+fn open_window_group(group_id: String) -> Result<(), String> {
+    with_host(|h| h.open_window_group(&group_id))
+}
+
+#[tauri::command]
+fn close_window_group(group_id: String) -> Result<(), String> {
+    with_host(|h| h.close_window_group(&group_id))
 }
 
 #[tauri::command]
@@ -146,6 +179,12 @@ pub fn run() {
             close_command_palette,
             list_plugins,
             open_plugin,
+            list_content_windows,
+            list_window_groups,
+            create_window_group,
+            open_window_group_declared,
+            open_window_group,
+            close_window_group,
             propose_install,
             confirm_install,
             decline_install,

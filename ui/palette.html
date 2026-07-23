@@ -40,6 +40,10 @@
         background: transparent;
         color: var(--ink);
       }
+      #commands {
+        max-height: 16rem;
+        overflow: auto;
+      }
       button.command {
         display: block;
         width: 100%;
@@ -52,7 +56,8 @@
         cursor: pointer;
       }
       button.command:hover,
-      button.command:focus {
+      button.command:focus,
+      button.command.active {
         background: #243140;
         outline: none;
       }
@@ -69,28 +74,102 @@
   <body>
     <div class="shell">
       <input id="query" type="search" placeholder="Type a command…" autofocus />
-      <button class="command" id="open-blank" type="button">
-        Open blank window
-      </button>
+      <div id="commands"></div>
       <div class="hint">
         <span class="accent">Ctrl/Cmd+K</span> opens this palette
       </div>
     </div>
     <script>
-      async function invoke(cmd) {
+      async function invoke(cmd, args) {
         const fn = window.__TAURI__?.core?.invoke;
-        if (fn) await fn(cmd);
+        if (fn) return await fn(cmd, args);
+        return null;
       }
-      document.getElementById("open-blank").addEventListener("click", () => {
-        invoke("open_blank_window").then(() => invoke("close_command_palette"));
+
+      let commands = [];
+      let active = 0;
+
+      async function closePalette() {
+        await invoke("close_command_palette");
+      }
+
+      async function buildCommands() {
+        const groups = (await invoke("list_window_groups")) || [];
+        const items = [
+          {
+            label: "Open blank window",
+            run: async () => {
+              await invoke("open_blank_window");
+            },
+          },
+        ];
+        for (const group of groups) {
+          items.push({
+            label: `Open group: ${group.name}`,
+            run: async () => {
+              await invoke("open_window_group", { groupId: group.id });
+            },
+          });
+          items.push({
+            label: `Close group: ${group.name}`,
+            run: async () => {
+              await invoke("close_window_group", { groupId: group.id });
+            },
+          });
+        }
+        return items;
+      }
+
+      function visibleCommands() {
+        const q = document.getElementById("query").value.trim().toLowerCase();
+        if (!q) return commands;
+        return commands.filter((c) => c.label.toLowerCase().includes(q));
+      }
+
+      function render() {
+        const list = document.getElementById("commands");
+        list.innerHTML = "";
+        const visible = visibleCommands();
+        if (active >= visible.length) active = Math.max(0, visible.length - 1);
+        visible.forEach((cmd, index) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "command" + (index === active ? " active" : "");
+          btn.textContent = cmd.label;
+          btn.addEventListener("click", () => runCommand(cmd));
+          list.append(btn);
+        });
+      }
+
+      async function runCommand(cmd) {
+        await cmd.run();
+        await closePalette();
+      }
+
+      document.getElementById("query").addEventListener("input", () => {
+        active = 0;
+        render();
       });
       document.getElementById("query").addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          document.getElementById("open-blank").click();
+        const visible = visibleCommands();
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          active = Math.min(active + 1, Math.max(0, visible.length - 1));
+          render();
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          active = Math.max(active - 1, 0);
+          render();
+        } else if (event.key === "Enter") {
+          if (visible[active]) runCommand(visible[active]);
+        } else if (event.key === "Escape") {
+          closePalette();
         }
-        if (event.key === "Escape") {
-          invoke("close_command_palette");
-        }
+      });
+
+      buildCommands().then((items) => {
+        commands = items;
+        render();
       });
     </script>
   </body>

@@ -18,7 +18,8 @@ use crate::manifest::Manifest;
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 use crate::sidecar_bridge;
 use crate::workspace::{
-    WindowGeometry, Workspace, WorkspaceWindow, WorkspaceWindowKind,
+    WindowGeometry, Workspace, WorkspaceGroup, WorkspaceGroupMember, WorkspaceWindow,
+    WorkspaceWindowKind,
 };
 use std::process::Child;
 
@@ -29,10 +30,38 @@ pub struct ListedPlugin {
     pub version: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedWindowGroup {
+    pub id: String,
+    pub name: String,
+    pub member_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedContentWindow {
+    pub label: String,
+    pub kind: String,
+    pub plugin_id: Option<String>,
+    pub instance_id: Option<String>,
+}
+
+struct BlankWindowEntry {
+    id: WindowId,
+    blank_id: String,
+}
+
 struct PluginWindowEntry {
     id: WindowId,
     plugin_id: String,
     instance_id: String,
+}
+
+struct WindowGroupEntry {
+    id: String,
+    name: String,
+    members: Vec<WorkspaceGroupMember>,
 }
 
 pub struct Host {
@@ -46,8 +75,9 @@ struct HostState {
     tray: Option<TrayId>,
     launcher: Option<WindowId>,
     palette: Option<WindowId>,
-    blanks: Vec<WindowId>,
+    blanks: Vec<BlankWindowEntry>,
     plugin_windows: Vec<PluginWindowEntry>,
+    window_groups: Vec<WindowGroupEntry>,
     /// plugin_id → (platform lifecycle id, child process)
     sidecars: HashMap<String, (SidecarId, Child)>,
     plugins: HashMap<String, Manifest>,
@@ -71,6 +101,7 @@ impl Host {
                 palette: None,
                 blanks: Vec::new(),
                 plugin_windows: Vec::new(),
+                window_groups: Vec::new(),
                 sidecars: HashMap::new(),
                 plugins: HashMap::new(),
                 plugins_dir: None,
@@ -143,12 +174,13 @@ impl Host {
         if let Some(id) = state.palette.take() {
             self.platform.close_window(&id);
         }
-        for id in state.blanks.drain(..) {
-            self.platform.close_window(&id);
+        for entry in state.blanks.drain(..) {
+            self.platform.close_window(&entry.id);
         }
         for entry in state.plugin_windows.drain(..) {
             self.platform.close_window(&entry.id);
         }
+        state.window_groups.clear();
         for (_, (sidecar_id, mut child)) in state.sidecars.drain() {
             let _ = child.kill();
             let _ = child.wait();
@@ -484,9 +516,9 @@ impl Host {
 
     pub fn open_blank_window(&self) {
         let mut state = self.inner.lock().expect("host");
-        state
-            .blanks
-            .push(self.platform.create_window(WindowKind::Blank));
+        let blank_id = uuid::Uuid::new_v4().to_string();
+        let id = self.platform.create_window(WindowKind::Blank);
+        state.blanks.push(BlankWindowEntry { id, blank_id });
     }
 
     pub fn open_windows(&self) -> Vec<(String, WindowKind)> {
@@ -499,8 +531,8 @@ impl Host {
         if let Some(id) = &state.palette {
             result.push((id.0.clone(), WindowKind::Palette));
         }
-        for id in &state.blanks {
-            result.push((id.0.clone(), WindowKind::Blank));
+        for entry in &state.blanks {
+            result.push((entry.id.0.clone(), WindowKind::Blank));
         }
         for entry in &state.plugin_windows {
             result.push((
@@ -513,7 +545,215 @@ impl Host {
         result
     }
 
-    /// Current Workspace snapshot (layout + Plugin instance ids only).
+    /// Content windows eligible for Window Groups (blanks + Plugins; not launcher/palette).
+    pub fn list_content_windows(&self) -> Vec<ListedContentWindow> {
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+        let mut result = Vec::new();
+        for entry in &state.blanks {
+            result.push(ListedContentWindow {
+                label: entry.id.0.clone(),
+                kind: "blank".into(),
+                plugin_id: None,
+                instance_id: Some(entry.blank_id.clone()),
+            });
+        }
+        for entry in &state.plugin_windows {
+            result.push(ListedContentWindow {
+                label: entry.id.0.clone(),
+                kind: "plugin".into(),
+                plugin_id: Some(entry.plugin_id.clone()),
+                instance_id: Some(entry.instance_id.clone()),
+            });
+        }
+        result
+    }
+
+    /// Bind currently open content windows into a named Window Group.
+    pub fn create_window_group(
+        &self,
+        name: &str,
+        window_labels: &[String],
+    ) -> Result<ListedWindowGroup, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Window Group name is required".into());
+        }
+        if window_labels.is_empty() {
+            return Err("Window Group needs at least one window".into());
+        }
+
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+
+        let mut members = Vec::new();
+        for label in window_labels {
+            if let Some(blank) = state.blanks.iter().find(|e| e.id.0 == *label) {
+                members.push(WorkspaceGroupMember::Blank {
+                    blank_id: blank.blank_id.clone(),
+                });
+                continue;
+            }
+            if let Some(plugin) = state.plugin_windows.iter().find(|e| e.id.0 == *label) {
+                members.push(WorkspaceGroupMember::Plugin {
+                    plugin_id: plugin.plugin_id.clone(),
+                    instance_id: plugin.instance_id.clone(),
+                });
+                continue;
+            }
+            return Err(format!("unknown content window: {label}"));
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let listed = ListedWindowGroup {
+            id: id.clone(),
+            name: name.to_string(),
+            member_count: members.len(),
+        };
+        state.window_groups.push(WindowGroupEntry {
+            id,
+            name: name.to_string(),
+            members,
+        });
+        Ok(listed)
+    }
+
+    /// Declare a Window Group by opening the given Plugins as members now.
+    pub fn open_window_group_declared(
+        &self,
+        name: &str,
+        plugin_ids: &[String],
+    ) -> Result<ListedWindowGroup, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Window Group name is required".into());
+        }
+        if plugin_ids.is_empty() {
+            return Err("Window Group needs at least one Plugin".into());
+        }
+
+        let mut labels = Vec::new();
+        for plugin_id in plugin_ids {
+            self.open_plugin(plugin_id)?;
+            let label = self
+                .open_windows()
+                .into_iter()
+                .rev()
+                .find_map(|(id, k)| match k {
+                    WindowKind::PureUi { plugin_id: pid } if pid == *plugin_id => Some(id),
+                    _ => None,
+                })
+                .ok_or_else(|| format!("failed to open Plugin window: {plugin_id}"))?;
+            labels.push(label);
+        }
+        self.create_window_group(name, &labels)
+    }
+
+    pub fn list_window_groups(&self) -> Vec<ListedWindowGroup> {
+        let state = self.inner.lock().expect("host");
+        state
+            .window_groups
+            .iter()
+            .map(|g| ListedWindowGroup {
+                id: g.id.clone(),
+                name: g.name.clone(),
+                member_count: g.members.len(),
+            })
+            .collect()
+    }
+
+    /// Open all member windows for a Window Group (skips members already open).
+    pub fn open_window_group(&self, group_id: &str) -> Result<(), String> {
+        let members = {
+            let state = self.inner.lock().expect("host");
+            let group = state
+                .window_groups
+                .iter()
+                .find(|g| g.id == group_id)
+                .ok_or_else(|| format!("unknown Window Group: {group_id}"))?;
+            group.members.clone()
+        };
+
+        for member in members {
+            match member {
+                WorkspaceGroupMember::Blank { blank_id } => {
+                    let already_open = {
+                        let state = self.inner.lock().expect("host");
+                        state.blanks.iter().any(|e| e.blank_id == blank_id)
+                    };
+                    if !already_open {
+                        let mut state = self.inner.lock().expect("host");
+                        let id = self.platform.create_window(WindowKind::Blank);
+                        state.blanks.push(BlankWindowEntry { id, blank_id });
+                    }
+                }
+                WorkspaceGroupMember::Plugin {
+                    plugin_id,
+                    instance_id,
+                } => {
+                    let already_open = {
+                        let state = self.inner.lock().expect("host");
+                        state
+                            .plugin_windows
+                            .iter()
+                            .any(|e| e.instance_id == instance_id)
+                    };
+                    if !already_open {
+                        self.open_plugin_instance(&plugin_id, &instance_id, None)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Close currently open member windows for a Window Group (definition remains).
+    pub fn close_window_group(&self, group_id: &str) -> Result<(), String> {
+        let members = {
+            let state = self.inner.lock().expect("host");
+            let group = state
+                .window_groups
+                .iter()
+                .find(|g| g.id == group_id)
+                .ok_or_else(|| format!("unknown Window Group: {group_id}"))?;
+            group.members.clone()
+        };
+
+        let mut state = self.inner.lock().expect("host");
+        for member in members {
+            match member {
+                WorkspaceGroupMember::Blank { blank_id } => {
+                    let mut kept = Vec::new();
+                    for entry in state.blanks.drain(..) {
+                        if entry.blank_id == blank_id {
+                            self.platform.close_window(&entry.id);
+                        } else {
+                            kept.push(entry);
+                        }
+                    }
+                    state.blanks = kept;
+                }
+                WorkspaceGroupMember::Plugin {
+                    plugin_id: _,
+                    instance_id,
+                } => {
+                    let mut kept = Vec::new();
+                    for entry in state.plugin_windows.drain(..) {
+                        if entry.instance_id == instance_id {
+                            self.platform.close_window(&entry.id);
+                        } else {
+                            kept.push(entry);
+                        }
+                    }
+                    state.plugin_windows = kept;
+                }
+            }
+        }
+        Self::prune_locked(&self.platform, &mut state);
+        Ok(())
+    }
+
+    /// Current Workspace snapshot (layout + Plugin instance ids + Window Groups).
     pub fn capture_workspace(&self) -> Workspace {
         let mut state = self.inner.lock().expect("host");
         Self::prune_locked(&self.platform, &mut state);
@@ -522,10 +762,12 @@ impl Host {
 
     fn capture_workspace_locked(platform: &Arc<dyn Platform>, state: &HostState) -> Workspace {
         let mut windows = Vec::new();
-        for id in &state.blanks {
-            if let Some(geometry) = platform.window_geometry(id) {
+        for entry in &state.blanks {
+            if let Some(geometry) = platform.window_geometry(&entry.id) {
                 windows.push(WorkspaceWindow {
-                    kind: WorkspaceWindowKind::Blank,
+                    kind: WorkspaceWindowKind::Blank {
+                        blank_id: entry.blank_id.clone(),
+                    },
                     geometry,
                 });
             }
@@ -541,7 +783,16 @@ impl Host {
                 });
             }
         }
-        Workspace { windows }
+        let groups = state
+            .window_groups
+            .iter()
+            .map(|g| WorkspaceGroup {
+                id: g.id.clone(),
+                name: g.name.clone(),
+                members: g.members.clone(),
+            })
+            .collect();
+        Workspace { windows, groups }
     }
 
     pub fn save_workspace(&self) -> Result<(), String> {
@@ -575,12 +826,13 @@ impl Host {
         // Replace content windows so restore matches the last snapshot (not append).
         {
             let mut state = self.inner.lock().expect("host");
-            for id in state.blanks.drain(..) {
-                self.platform.close_window(&id);
+            for entry in state.blanks.drain(..) {
+                self.platform.close_window(&entry.id);
             }
             for entry in state.plugin_windows.drain(..) {
                 self.platform.close_window(&entry.id);
             }
+            state.window_groups.clear();
             let sidecar_plugins: Vec<String> = state.sidecars.keys().cloned().collect();
             for plugin_id in sidecar_plugins {
                 Self::stop_sidecar_locked(&self.platform, &mut state, &plugin_id);
@@ -589,11 +841,16 @@ impl Host {
 
         for window in workspace.windows {
             match window.kind {
-                WorkspaceWindowKind::Blank => {
+                WorkspaceWindowKind::Blank { blank_id } => {
+                    let blank_id = if blank_id.is_empty() {
+                        uuid::Uuid::new_v4().to_string()
+                    } else {
+                        blank_id
+                    };
                     let id = self.platform.create_window(WindowKind::Blank);
                     self.platform.set_window_geometry(&id, &window.geometry);
                     let mut state = self.inner.lock().expect("host");
-                    state.blanks.push(id);
+                    state.blanks.push(BlankWindowEntry { id, blank_id });
                 }
                 WorkspaceWindowKind::Plugin {
                     plugin_id,
@@ -607,6 +864,19 @@ impl Host {
                     );
                 }
             }
+        }
+
+        {
+            let mut state = self.inner.lock().expect("host");
+            state.window_groups = workspace
+                .groups
+                .into_iter()
+                .map(|g| WindowGroupEntry {
+                    id: g.id,
+                    name: g.name,
+                    members: g.members,
+                })
+                .collect();
         }
         Ok(())
     }
@@ -703,7 +973,7 @@ impl Host {
         }
         state
             .blanks
-            .retain(|id| !platform.is_window_destroyed(id));
+            .retain(|entry| !platform.is_window_destroyed(&entry.id));
         state
             .plugin_windows
             .retain(|entry| !platform.is_window_destroyed(&entry.id));
@@ -1362,10 +1632,7 @@ mod tests {
             .expect("load")
             .expect("workspace present");
         assert!(saved.windows.iter().any(|w| {
-            matches!(
-                &w.kind,
-                WorkspaceWindowKind::Blank
-            )
+            matches!(&w.kind, WorkspaceWindowKind::Blank { .. })
         }));
         let plugin = saved
             .windows
@@ -1457,7 +1724,10 @@ mod tests {
         let snapshot = host.capture_workspace();
         let raw = serde_json::to_value(&snapshot).expect("json");
         let obj = raw.as_object().expect("object");
-        assert_eq!(obj.keys().collect::<Vec<_>>(), vec!["windows"]);
+        let mut keys: Vec<_> = obj.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["groups".to_string(), "windows".to_string()]);
+        assert!(raw["groups"].as_array().expect("groups").is_empty());
         for window in raw["windows"].as_array().expect("windows") {
             let keys: Vec<_> = window.as_object().expect("window").keys().cloned().collect();
             assert!(keys.contains(&"kind".to_string()));
@@ -1466,7 +1736,10 @@ mod tests {
             let kind = &window["kind"];
             match kind["type"].as_str() {
                 Some("blank") => {
-                    assert_eq!(kind.as_object().expect("kind").len(), 1);
+                    let kind_obj = kind.as_object().expect("kind");
+                    assert!(kind_obj.contains_key("type"));
+                    assert!(kind_obj.contains_key("blankId"));
+                    assert_eq!(kind_obj.len(), 2);
                 }
                 Some("plugin") => {
                     let kind_keys: Vec<_> =
@@ -1500,5 +1773,98 @@ mod tests {
             .iter()
             .any(|(_, k)| matches!(k, WindowKind::PureUi { plugin_id } if plugin_id == "hello")));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn create_named_window_group_from_open_windows() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("hello").expect("open hello");
+        host.open_blank_window();
+        let labels: Vec<String> = host
+            .list_content_windows()
+            .into_iter()
+            .map(|w| w.label)
+            .collect();
+        assert_eq!(labels.len(), 2);
+
+        let group = host
+            .create_window_group("Stack", &labels)
+            .expect("create group");
+        assert_eq!(group.name, "Stack");
+        assert_eq!(group.member_count, 2);
+        assert_eq!(host.list_window_groups().len(), 1);
+    }
+
+    #[test]
+    fn opening_and_closing_window_group_toggles_member_windows() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        let group = host
+            .open_window_group_declared("Demo", &["hello".into(), "echo".into()])
+            .expect("declare");
+        assert_eq!(host.plugin_instance_ids().len(), 2);
+
+        host.close_window_group(&group.id).expect("close");
+        assert!(host.plugin_instance_ids().is_empty());
+        assert_eq!(host.list_window_groups().len(), 1); // definition remains
+
+        host.open_window_group(&group.id).expect("reopen");
+        let open = host.plugin_instance_ids();
+        assert_eq!(open.len(), 2);
+        assert!(open.iter().any(|(id, _)| id == "hello"));
+        assert!(open.iter().any(|(id, _)| id == "echo"));
+    }
+
+    #[test]
+    fn window_groups_restore_with_workspace() {
+        let path = workspace_temp_path();
+        let _ = fs::remove_file(&path);
+
+        let (host, _) = boot();
+        host.set_workspace_path(path.clone());
+        host.load_plugins_from(&fixture_plugins_dir());
+        let group = host
+            .open_window_group_declared("Persist", &["hello".into()])
+            .expect("declare");
+        let instances = host.plugin_instance_ids();
+        host.save_workspace().expect("save");
+        host.stop();
+
+        let (host2, _) = boot();
+        host2.set_workspace_path(path.clone());
+        host2.load_plugins_from(&fixture_plugins_dir());
+        host2.restore_workspace().expect("restore");
+
+        let groups = host2.list_window_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, group.id);
+        assert_eq!(groups[0].name, "Persist");
+        assert_eq!(host2.plugin_instance_ids(), instances);
+
+        // Ungrouped windows still work.
+        host2.open_blank_window();
+        assert!(host2
+            .open_windows()
+            .iter()
+            .any(|(_, k)| *k == WindowKind::Blank));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ungrouped_windows_unaffected_by_other_groups() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("hello").expect("hello");
+        let solo = host.plugin_instance_ids()[0].1.clone();
+        let group = host
+            .open_window_group_declared("OnlyEcho", &["echo".into()])
+            .expect("group");
+        host.close_window_group(&group.id).expect("close group");
+
+        assert_eq!(
+            host.plugin_instance_ids(),
+            vec![("hello".into(), solo)]
+        );
     }
 }
