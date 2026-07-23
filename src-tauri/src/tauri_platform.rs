@@ -12,6 +12,7 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
+use crate::workspace::WindowGeometry;
 
 pub struct TauriPlatform {
     app: AppHandle,
@@ -194,6 +195,31 @@ impl Platform for TauriPlatform {
     fn window_allows_privileged_apis(&self, id: &WindowId) -> bool {
         let state = self.state.lock().expect("tauri platform");
         state.privileged.get(&id.0).copied().unwrap_or(false)
+    }
+
+    fn window_geometry(&self, id: &WindowId) -> Option<WindowGeometry> {
+        let win = self.app.get_webview_window(&id.0)?;
+        let position = win.outer_position().ok()?;
+        let size = win.outer_size().ok()?;
+        Some(WindowGeometry {
+            x: position.x as f64,
+            y: position.y as f64,
+            width: size.width as f64,
+            height: size.height as f64,
+        })
+    }
+
+    fn set_window_geometry(&self, id: &WindowId, geometry: &WindowGeometry) {
+        if let Some(win) = self.app.get_webview_window(&id.0) {
+            let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: geometry.x as i32,
+                y: geometry.y as i32,
+            }));
+            let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                width: geometry.width.max(100.0) as u32,
+                height: geometry.height.max(100.0) as u32,
+            }));
+        }
     }
 
     fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {

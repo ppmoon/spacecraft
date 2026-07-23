@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
+use crate::workspace::WindowGeometry;
 
 struct MemoryWindow {
     destroyed: bool,
     privileged: bool,
     ui_entry: Option<PathBuf>,
+    geometry: WindowGeometry,
 }
 
 struct MemorySidecar {
@@ -105,6 +107,7 @@ impl Platform for MemoryPlatform {
                 destroyed: false,
                 privileged: true,
                 ui_entry: None,
+                geometry: WindowGeometry::default(),
             },
         );
         WindowId(id)
@@ -120,6 +123,7 @@ impl Platform for MemoryPlatform {
                 destroyed: false,
                 privileged: false,
                 ui_entry: Some(ui_entry.to_path_buf()),
+                geometry: WindowGeometry::default(),
             },
         );
         WindowId(id)
@@ -148,6 +152,26 @@ impl Platform for MemoryPlatform {
             .get(&id.0)
             .map(|w| w.privileged && !w.destroyed)
             .unwrap_or(false)
+    }
+
+    fn window_geometry(&self, id: &WindowId) -> Option<WindowGeometry> {
+        let state = self.state.lock().expect("memory platform");
+        state.windows.get(&id.0).and_then(|w| {
+            if w.destroyed {
+                None
+            } else {
+                Some(w.geometry)
+            }
+        })
+    }
+
+    fn set_window_geometry(&self, id: &WindowId, geometry: &WindowGeometry) {
+        let mut state = self.state.lock().expect("memory platform");
+        if let Some(w) = state.windows.get_mut(&id.0) {
+            if !w.destroyed {
+                w.geometry = *geometry;
+            }
+        }
     }
 
     fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId {

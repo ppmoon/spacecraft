@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use crate::workspace::WindowGeometry;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowKind {
     Blank,
@@ -31,6 +33,8 @@ pub trait Platform: Send + Sync {
     fn is_window_destroyed(&self, id: &WindowId) -> bool;
     /// Whether the window may call privileged Host shell commands (not Bus).
     fn window_allows_privileged_apis(&self, id: &WindowId) -> bool;
+    fn window_geometry(&self, id: &WindowId) -> Option<WindowGeometry>;
+    fn set_window_geometry(&self, id: &WindowId, geometry: &WindowGeometry);
     fn spawn_sidecar(&self, plugin_id: &str) -> SidecarId;
     fn stop_sidecar(&self, id: &SidecarId);
     fn is_sidecar_running(&self, id: &SidecarId) -> bool;

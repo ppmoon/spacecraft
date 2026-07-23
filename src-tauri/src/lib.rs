@@ -6,6 +6,7 @@ mod memory_platform;
 mod platform;
 mod sidecar_bridge;
 mod tauri_platform;
+mod workspace;
 
 pub use host::{Host, ListedPlugin};
 pub use install::InstallProposal;
@@ -154,10 +155,16 @@ pub fn run() {
             bus_subscribe
         ])
         .setup(move |app| {
+            let plugins_dir = default_plugins_dir();
+            let workspace_path = plugins_dir.join(".spacecraft-workspace.json");
             let platform = Arc::new(tauri_platform::TauriPlatform::new(app.handle().clone()));
             let host = Arc::new(Host::new(platform));
-            host.load_plugins_from(&default_plugins_dir());
+            host.set_workspace_path(workspace_path);
+            host.load_plugins_from(&plugins_dir);
             host.start();
+            if let Err(e) = host.restore_workspace() {
+                eprintln!("spacecraft: workspace restore skipped: {e}");
+            }
             *host_slot().lock().expect("host slot") = Some(Arc::clone(&host));
 
             if smoke {
