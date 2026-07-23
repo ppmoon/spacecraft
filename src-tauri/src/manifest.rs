@@ -19,6 +19,8 @@ pub struct Manifest {
     pub sidecar: Option<String>,
     pub permissions: ManifestPermissions,
     pub contracts: HashMap<String, BusContract>,
+    /// Reserved for later signing — accepted, never verified in Phase 1.
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,9 @@ struct ManifestFile {
     permissions: Option<ManifestPermissionsFile>,
     #[serde(default)]
     contracts: Option<HashMap<String, BusContractFile>>,
+    /// Reserved signature field — present or absent is fine; never verified yet.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,6 +175,7 @@ impl Manifest {
             sidecar: parsed.sidecar,
             permissions,
             contracts,
+            signature: parsed.signature.filter(|s| !s.trim().is_empty()),
         })
     }
 

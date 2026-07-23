@@ -29,6 +29,7 @@ By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT
 
 - `plugins/hello/` — Pure-UI Plugin
 - `plugins/echo/` — privileged Plugin (Sidecar + permissioned Bus)
+- `fixtures/packages/notes/` — installable package (folder or zip) used for permission-confirm install
 
 ### Host actions
 
@@ -37,8 +38,8 @@ By default the Host scans `plugins/` next to the repo (override with `SPACECRAFT
 | Open launcher | Tray menu → **Open Launcher** |
 | Open command palette | `Ctrl/Cmd+K` or tray menu → **Command Palette** |
 | Open blank window | Command palette → **Open blank window** (or launcher button) |
-| Open Hello Plugin | Launcher → Plugins → **Hello** → **Open** |
-| Open Echo Plugin | Launcher → Plugins → **Echo** → **Open** (Sidecar + Bus) |
+| Install Plugin | Launcher → path to folder/zip → **Review permissions** → Confirm / Decline |
+| Open Hello / Echo / Notes | Launcher → Plugins → **Open** |
 | Quit | Tray menu → **Quit** |
 
 ## Test
@@ -63,4 +64,4 @@ Manual smoke on Windows, macOS, and the current test Linux:
 npm run smoke   # opens launcher + palette + blank + hello + echo, then quits
 ```
 
-See `docs/smoke/phase-1-01.md`, `docs/smoke/phase-1-02.md`, and `docs/smoke/phase-1-03.md` for platform notes.
+See `docs/smoke/phase-1-01.md` through `docs/smoke/phase-1-04.md` for platform notes.

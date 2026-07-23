@@ -10,6 +10,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::bus::{Bus, BusError, BusProxy};
+use crate::install::{
+    commit_staged_install, permission_items, stage_from_folder, stage_from_zip, InstallProposal,
+    PendingInstall, PermissionItem,
+};
 use crate::manifest::Manifest;
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 use crate::sidecar_bridge;
@@ -39,6 +43,10 @@ struct HostState {
     sidecars: HashMap<String, (SidecarId, Child)>,
     plugins: HashMap<String, Manifest>,
     plugins_dir: Option<PathBuf>,
+    pending_install: Option<PendingInstall>,
+    /// plugin_id → confirmed permission grants from install
+    confirmed_grants: HashMap<String, Vec<PermissionItem>>,
+    staging_root: PathBuf,
 }
 
 impl Host {
@@ -56,6 +64,12 @@ impl Host {
                 sidecars: HashMap::new(),
                 plugins: HashMap::new(),
                 plugins_dir: None,
+                pending_install: None,
+                confirmed_grants: HashMap::new(),
+                staging_root: std::env::temp_dir().join(format!(
+                    "spacecraft-install-staging-{}",
+                    uuid::Uuid::new_v4()
+                )),
             }),
         }
     }
@@ -132,9 +146,11 @@ impl Host {
     /// Remembers `dir` so later launcher opens re-scan (drop-in discovery).
     pub fn load_plugins_from(&self, dir: &Path) {
         let discovered = Self::scan_plugins_dir(dir);
+        let grants = load_grants(dir);
         let mut state = self.inner.lock().expect("host");
         state.plugins_dir = Some(dir.to_path_buf());
         state.plugins = discovered;
+        state.confirmed_grants = grants;
     }
 
     fn scan_plugins_dir(dir: &Path) -> HashMap<String, Manifest> {
@@ -176,6 +192,132 @@ impl Host {
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
+    }
+
+    /// Inspect a local Plugin folder and return a permission proposal (no install yet).
+    pub fn propose_install_from_folder(&self, source: &Path) -> Result<InstallProposal, String> {
+        let mut state = self.inner.lock().expect("host");
+        Self::clear_pending_locked(&mut state);
+        let staging_root = state.staging_root.clone();
+        drop(state);
+        std::fs::create_dir_all(&staging_root).map_err(|e| e.to_string())?;
+        let (staging_dir, manifest) = stage_from_folder(source, &staging_root)?;
+        self.store_pending(staging_dir, manifest, "folder")
+    }
+
+    /// Inspect a local Plugin zip and return a permission proposal (no install yet).
+    pub fn propose_install_from_zip(&self, source: &Path) -> Result<InstallProposal, String> {
+        let mut state = self.inner.lock().expect("host");
+        Self::clear_pending_locked(&mut state);
+        let staging_root = state.staging_root.clone();
+        drop(state);
+        std::fs::create_dir_all(&staging_root).map_err(|e| e.to_string())?;
+        let (staging_dir, manifest) = stage_from_zip(source, &staging_root)?;
+        self.store_pending(staging_dir, manifest, "zip")
+    }
+
+    fn store_pending(
+        &self,
+        staging_dir: PathBuf,
+        manifest: Manifest,
+        source_kind: &str,
+    ) -> Result<InstallProposal, String> {
+        let proposal = InstallProposal {
+            proposal_id: uuid::Uuid::new_v4().to_string(),
+            plugin_id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            permissions: permission_items(&manifest),
+            signature_present: manifest.signature.is_some(),
+            source_kind: source_kind.to_string(),
+        };
+        let mut state = self.inner.lock().expect("host");
+        state.pending_install = Some(PendingInstall {
+            proposal: proposal.clone(),
+            staging_dir,
+            manifest,
+        });
+        Ok(proposal)
+    }
+
+    pub fn pending_install(&self) -> Option<InstallProposal> {
+        self.inner
+            .lock()
+            .expect("host")
+            .pending_install
+            .as_ref()
+            .map(|p| p.proposal.clone())
+    }
+
+    /// Confirm the pending proposal: copy into plugins dir and record grants.
+    pub fn confirm_install(&self, proposal_id: &str) -> Result<ListedPlugin, String> {
+        let mut state = self.inner.lock().expect("host");
+        let pending = state
+            .pending_install
+            .take()
+            .ok_or_else(|| "no pending Plugin install".to_string())?;
+        if pending.proposal.proposal_id != proposal_id {
+            state.pending_install = Some(pending);
+            return Err("proposal id mismatch".into());
+        }
+        let plugins_dir = state
+            .plugins_dir
+            .clone()
+            .ok_or_else(|| "plugins directory is not configured".to_string())?;
+        let staging = pending.staging_dir.clone();
+        let plugin_id = pending.manifest.id.clone();
+        let grants = pending.proposal.permissions.clone();
+        drop(state);
+
+        commit_staged_install(&staging, &plugins_dir, &plugin_id)?;
+        let _ = std::fs::remove_dir_all(&staging);
+        persist_grants(&plugins_dir, &plugin_id, &grants)?;
+
+        let mut state = self.inner.lock().expect("host");
+        state.confirmed_grants.insert(plugin_id.clone(), grants);
+        Self::rescan_plugins_locked(&mut state);
+        let listed = state
+            .plugins
+            .get(&plugin_id)
+            .map(|m| ListedPlugin {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                version: m.version.clone(),
+            })
+            .ok_or_else(|| "installed Plugin did not appear after confirm".to_string())?;
+        Ok(listed)
+    }
+
+    /// Decline the pending proposal; leave the workbench unchanged.
+    pub fn decline_install(&self, proposal_id: &str) -> Result<(), String> {
+        let mut state = self.inner.lock().expect("host");
+        let pending = state
+            .pending_install
+            .take()
+            .ok_or_else(|| "no pending Plugin install".to_string())?;
+        if pending.proposal.proposal_id != proposal_id {
+            state.pending_install = Some(pending);
+            return Err("proposal id mismatch".into());
+        }
+        let staging = pending.staging_dir;
+        drop(state);
+        let _ = std::fs::remove_dir_all(staging);
+        Ok(())
+    }
+
+    pub fn confirmed_grants_for(&self, plugin_id: &str) -> Option<Vec<PermissionItem>> {
+        self.inner
+            .lock()
+            .expect("host")
+            .confirmed_grants
+            .get(plugin_id)
+            .cloned()
+    }
+
+    fn clear_pending_locked(state: &mut HostState) {
+        if let Some(pending) = state.pending_install.take() {
+            let _ = std::fs::remove_dir_all(pending.staging_dir);
+        }
     }
 
     /// Scoped Bus proxy for a loaded Plugin surface (window UI or test double).
@@ -426,6 +568,30 @@ impl Host {
             platform.stop_sidecar(&sidecar_id);
         }
     }
+}
+
+fn grants_file(plugins_dir: &Path) -> PathBuf {
+    plugins_dir.join(".spacecraft-grants.json")
+}
+
+fn load_grants(plugins_dir: &Path) -> HashMap<String, Vec<PermissionItem>> {
+    let path = grants_file(plugins_dir);
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn persist_grants(
+    plugins_dir: &Path,
+    plugin_id: &str,
+    grants: &[PermissionItem],
+) -> Result<(), String> {
+    let mut all = load_grants(plugins_dir);
+    all.insert(plugin_id.to_string(), grants.to_vec());
+    let path = grants_file(plugins_dir);
+    let raw = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
 fn resolve_sidecar_binary(manifest: &Manifest) -> Result<PathBuf, String> {
@@ -881,5 +1047,99 @@ mod tests {
             .emit("anything", json!({}))
             .expect_err("hello has empty permissions");
         assert!(matches!(err, BusError::PermissionDenied { .. }));
+    }
+
+    fn notes_package_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/packages/notes")
+    }
+
+    fn install_plugins_dir() -> PathBuf {
+        let dir = temp_plugins_dir();
+        dir
+    }
+
+    #[test]
+    fn install_from_folder_requires_confirm_before_listing() {
+        let plugins_dir = install_plugins_dir();
+        let (host, _) = boot();
+        host.load_plugins_from(&plugins_dir);
+        assert!(!host.listed_plugins().iter().any(|p| p.id == "notes"));
+
+        let proposal = host
+            .propose_install_from_folder(&notes_package_dir())
+            .expect("propose");
+        assert_eq!(proposal.plugin_id, "notes");
+        assert!(proposal.signature_present);
+        assert!(!proposal.permissions.is_empty());
+        assert!(proposal.permissions.iter().all(|p| p.sensitive));
+        assert!(!host.listed_plugins().iter().any(|p| p.id == "notes"));
+
+        let listed = host
+            .confirm_install(&proposal.proposal_id)
+            .expect("confirm");
+        assert_eq!(listed.id, "notes");
+        assert!(host.listed_plugins().iter().any(|p| p.id == "notes"));
+        assert!(host.confirmed_grants_for("notes").is_some());
+        assert!(plugins_dir.join("notes/manifest.json").is_file());
+        assert!(plugins_dir.join(".spacecraft-grants.json").is_file());
+
+        // Grants survive Host reload from the same plugins dir.
+        let (host2, _) = boot();
+        host2.load_plugins_from(&plugins_dir);
+        assert!(host2.confirmed_grants_for("notes").is_some());
+        let _ = fs::remove_dir_all(&plugins_dir);
+    }
+
+    #[test]
+    fn install_from_zip_works_after_confirm() {
+        let plugins_dir = install_plugins_dir();
+        let zip_path = std::env::temp_dir().join(format!(
+            "notes-{}.zip",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        crate::install::write_zip_from_dir(&notes_package_dir(), &zip_path).expect("zip");
+
+        let (host, _) = boot();
+        host.load_plugins_from(&plugins_dir);
+        let proposal = host.propose_install_from_zip(&zip_path).expect("propose");
+        assert_eq!(proposal.source_kind, "zip");
+        assert_eq!(proposal.plugin_id, "notes");
+
+        host.confirm_install(&proposal.proposal_id).expect("confirm");
+        assert!(host.listed_plugins().iter().any(|p| p.id == "notes"));
+        let _ = fs::remove_file(&zip_path);
+        let _ = fs::remove_dir_all(&plugins_dir);
+    }
+
+    #[test]
+    fn declined_install_leaves_workbench_unchanged() {
+        let plugins_dir = install_plugins_dir();
+        let (host, _) = boot();
+        host.load_plugins_from(&plugins_dir);
+        let before = host.listed_plugins();
+
+        let proposal = host
+            .propose_install_from_folder(&notes_package_dir())
+            .expect("propose");
+        host.decline_install(&proposal.proposal_id)
+            .expect("decline");
+
+        assert_eq!(host.listed_plugins(), before);
+        assert!(host.pending_install().is_none());
+        assert!(!plugins_dir.join("notes").exists());
+        assert!(host.confirmed_grants_for("notes").is_none());
+        let _ = fs::remove_dir_all(&plugins_dir);
+    }
+
+    #[test]
+    fn reserved_signature_field_is_accepted_without_verification() {
+        let manifest = Manifest::load_from_plugin_dir(&notes_package_dir()).expect("load");
+        assert_eq!(
+            manifest.signature.as_deref(),
+            Some("reserved-not-verified")
+        );
     }
 }

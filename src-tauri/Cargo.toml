@@ -20,6 +20,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 url = "2.5.8"
 uuid = { version = "1.20.0", features = ["v4"] }
+walkdir = "2.5.0"
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 
 [[bin]]
 name = "echo-sidecar"
