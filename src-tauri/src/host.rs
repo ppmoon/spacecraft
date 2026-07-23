@@ -128,7 +128,9 @@ impl Host {
         if let Some(path) = state.workspace_path.clone() {
             let snapshot = Self::capture_workspace_locked(&self.platform, &state);
             drop(state);
-            let _ = snapshot.save_to_path(&path);
+            if let Err(e) = snapshot.save_to_path(&path) {
+                eprintln!("spacecraft: workspace save failed: {e}");
+            }
             state = self.inner.lock().expect("host");
         }
 
@@ -359,44 +361,14 @@ impl Host {
     }
 
     pub fn open_plugin(&self, id: &str) -> Result<(), String> {
-        let mut state = self.inner.lock().expect("host");
-        Self::prune_locked(&self.platform, &mut state);
-        let Some(manifest) = state.plugins.get(id).cloned() else {
-            return Err(format!("unknown Plugin: {id}"));
-        };
-        let plugin_id = manifest.id.clone();
-
-        if manifest.is_privileged() {
-            if !state.sidecars.contains_key(&plugin_id) {
-                let binary = resolve_sidecar_binary(&manifest)?;
-                let sidecar_id = self.platform.spawn_sidecar(&plugin_id);
-                let sidecar_proxy = self.bus.proxy(
-                    plugin_id.clone(),
-                    manifest.permissions.clone(),
-                    manifest.contracts.clone(),
-                );
-                drop(state);
-                let child = sidecar_bridge::spawn_and_attach(&binary, sidecar_proxy)
-                    .map_err(|e| {
-                        self.platform.stop_sidecar(&sidecar_id);
-                        e
-                    })?;
-                state = self.inner.lock().expect("host");
-                state.sidecars.insert(plugin_id.clone(), (sidecar_id, child));
+        {
+            let state = self.inner.lock().expect("host");
+            if !state.plugins.contains_key(id) {
+                return Err(format!("unknown Plugin: {id}"));
             }
         }
-
-        let ui_entry = manifest.ui_entry_path();
-        let window = self
-            .platform
-            .create_pure_ui_window(&plugin_id, &ui_entry);
         let instance_id = uuid::Uuid::new_v4().to_string();
-        state.plugin_windows.push(PluginWindowEntry {
-            id: window,
-            plugin_id: plugin_id.clone(),
-            instance_id,
-        });
-        Ok(())
+        self.open_plugin_instance(id, &instance_id, None)
     }
 
     pub fn sidecar_running_for(&self, plugin_id: &str) -> bool {
@@ -672,7 +644,9 @@ impl Host {
         }
 
         let ui_entry = manifest.ui_entry_path();
-        let window = self.platform.create_pure_ui_window(plugin_id, &ui_entry);
+        let window = self
+            .platform
+            .create_pure_ui_window(plugin_id, instance_id, &ui_entry);
         if let Some(geometry) = geometry {
             self.platform.set_window_geometry(&window, &geometry);
         }
@@ -693,6 +667,18 @@ impl Host {
             .iter()
             .map(|e| (e.plugin_id.clone(), e.instance_id.clone()))
             .collect()
+    }
+
+    /// Workspace instance id for a Plugin window label (identity pointer for Plugin-owned state).
+    pub fn instance_id_for_window_label(&self, label: &str) -> Option<String> {
+        let state = self.inner.lock().expect("host");
+        state.plugin_windows.iter().find_map(|entry| {
+            if entry.id.0 == label {
+                Some(entry.instance_id.clone())
+            } else {
+                None
+            }
+        })
     }
 
     pub fn set_window_geometry_for_label(&self, label: &str, geometry: WindowGeometry) {
@@ -1439,7 +1425,7 @@ mod tests {
         host2.load_plugins_from(&fixture_plugins_dir());
         host2.restore_workspace().expect("restore");
 
-        assert_eq!(host2.plugin_instance_ids(), vec![("hello".into(), instance_id)]);
+        assert_eq!(host2.plugin_instance_ids(), vec![("hello".into(), instance_id.clone())]);
         let restored_label = host2
             .open_windows()
             .into_iter()
@@ -1449,8 +1435,16 @@ mod tests {
             })
             .expect("restored hello");
         assert_eq!(
-            platform2.window_geometry(&WindowId(restored_label)),
+            platform2.window_geometry(&WindowId(restored_label.clone())),
             Some(geometry)
+        );
+        assert_eq!(
+            platform2.instance_id_for(&WindowId(restored_label.clone())),
+            Some(instance_id.clone())
+        );
+        assert_eq!(
+            host2.instance_id_for_window_label(&restored_label),
+            Some(instance_id)
         );
         let _ = fs::remove_file(&path);
     }

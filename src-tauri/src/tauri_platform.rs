@@ -156,15 +156,23 @@ impl Platform for TauriPlatform {
         WindowId(label)
     }
 
-    fn create_pure_ui_window(&self, plugin_id: &str, ui_entry: &Path) -> WindowId {
+    fn create_pure_ui_window(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        ui_entry: &Path,
+    ) -> WindowId {
         let mut state = self.state.lock().expect("tauri platform");
         state.next_id += 1;
         let label = format!("plugin-{}-{}", plugin_id, state.next_id);
         state.privileged.insert(label.clone(), false);
         drop(state);
 
-        let file_url = url::Url::from_file_path(ui_entry)
+        let mut file_url = url::Url::from_file_path(ui_entry)
             .unwrap_or_else(|_| panic!("ui entry is not a valid file path: {ui_entry:?}"));
+        file_url
+            .query_pairs_mut()
+            .append_pair("instanceId", instance_id);
         let kind = WindowKind::PureUi {
             plugin_id: plugin_id.to_string(),
         };

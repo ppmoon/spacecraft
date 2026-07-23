@@ -11,6 +11,7 @@ struct MemoryWindow {
     destroyed: bool,
     privileged: bool,
     ui_entry: Option<PathBuf>,
+    instance_id: Option<String>,
     geometry: WindowGeometry,
 }
 
@@ -69,6 +70,15 @@ impl MemoryPlatform {
             .and_then(|w| w.ui_entry.clone())
     }
 
+    pub fn instance_id_for(&self, id: &WindowId) -> Option<String> {
+        self.state
+            .lock()
+            .expect("memory platform")
+            .windows
+            .get(&id.0)
+            .and_then(|w| w.instance_id.clone())
+    }
+
     pub fn running_sidecar_count_for(&self, plugin_id: &str) -> usize {
         self.state
             .lock()
@@ -107,13 +117,19 @@ impl Platform for MemoryPlatform {
                 destroyed: false,
                 privileged: true,
                 ui_entry: None,
+                instance_id: None,
                 geometry: WindowGeometry::default(),
             },
         );
         WindowId(id)
     }
 
-    fn create_pure_ui_window(&self, plugin_id: &str, ui_entry: &Path) -> WindowId {
+    fn create_pure_ui_window(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        ui_entry: &Path,
+    ) -> WindowId {
         let mut state = self.state.lock().expect("memory platform");
         state.next_id += 1;
         let id = format!("plugin-{}-{}", plugin_id, state.next_id);
@@ -123,6 +139,7 @@ impl Platform for MemoryPlatform {
                 destroyed: false,
                 privileged: false,
                 ui_entry: Some(ui_entry.to_path_buf()),
+                instance_id: Some(instance_id.to_string()),
                 geometry: WindowGeometry::default(),
             },
         );

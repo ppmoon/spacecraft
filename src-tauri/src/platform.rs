@@ -27,8 +27,13 @@ pub trait Platform: Send + Sync {
     fn create_tray(&self, on_quit: Box<dyn Fn() + Send + Sync>) -> TrayId;
     fn destroy_tray(&self, id: &TrayId);
     fn create_window(&self, kind: WindowKind) -> WindowId;
-    /// Open a Plugin window loading `ui_entry`.
-    fn create_pure_ui_window(&self, plugin_id: &str, ui_entry: &Path) -> WindowId;
+    /// Open a Plugin window loading `ui_entry` for a specific Workspace instance.
+    fn create_pure_ui_window(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        ui_entry: &Path,
+    ) -> WindowId;
     fn close_window(&self, id: &WindowId);
     fn is_window_destroyed(&self, id: &WindowId) -> bool;
     /// Whether the window may call privileged Host shell commands (not Bus).

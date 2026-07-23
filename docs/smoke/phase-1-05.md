@@ -25,7 +25,7 @@
 
 5. Start again with `npm start`.
 
-6. Confirm Hello (and any blank windows) reopen with the prior size/position and the same Plugin instance identity. Plugin UI business state is **not** Host-restored (Plugins own that separately).
+6. Confirm Hello (and any blank windows) reopen with the prior size/position. Hello shows the same `instanceId` query param (identity pointer for Plugin-owned state). Plugin UI business state is **not** Host-restored.
 
 7. Optionally corrupt `plugins/.spacecraft-workspace.json` (write garbage), restart — Host must still boot; tray/launcher remain usable.
 
