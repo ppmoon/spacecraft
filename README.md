@@ -64,4 +64,4 @@ Manual smoke on Windows, macOS, and the current test Linux:
 npm run smoke   # opens launcher + palette + blank + hello + echo, then quits
 ```
 
-See `docs/smoke/phase-1-01.md` through `docs/smoke/phase-1-04.md` for platform notes.
+See `docs/smoke/phase-1-01.md` through `docs/smoke/phase-1-05.md` for platform notes.

@@ -41,7 +41,14 @@
       <div>
         <h1>Hello</h1>
         <p>Pure-UI Plugin fixture — no Sidecar, local UI only.</p>
+        <p id="instance" style="margin-top: 0.75rem; font-size: 0.85rem; opacity: 0.65"></p>
       </div>
     </main>
+    <script>
+      const instanceId =
+        new URLSearchParams(location.search).get("instanceId") || "(none)";
+      document.getElementById("instance").textContent =
+        "instanceId: " + instanceId;
+    </script>
   </body>
 </html>

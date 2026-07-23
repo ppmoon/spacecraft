@@ -17,6 +17,9 @@ use crate::install::{
 use crate::manifest::Manifest;
 use crate::platform::{Platform, SidecarId, TrayId, WindowId, WindowKind};
 use crate::sidecar_bridge;
+use crate::workspace::{
+    WindowGeometry, Workspace, WorkspaceWindow, WorkspaceWindowKind,
+};
 use std::process::Child;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -24,6 +27,12 @@ pub struct ListedPlugin {
     pub id: String,
     pub name: String,
     pub version: String,
+}
+
+struct PluginWindowEntry {
+    id: WindowId,
+    plugin_id: String,
+    instance_id: String,
 }
 
 pub struct Host {
@@ -38,7 +47,7 @@ struct HostState {
     launcher: Option<WindowId>,
     palette: Option<WindowId>,
     blanks: Vec<WindowId>,
-    plugin_windows: Vec<(WindowId, WindowKind)>,
+    plugin_windows: Vec<PluginWindowEntry>,
     /// plugin_id → (platform lifecycle id, child process)
     sidecars: HashMap<String, (SidecarId, Child)>,
     plugins: HashMap<String, Manifest>,
@@ -47,6 +56,7 @@ struct HostState {
     /// plugin_id → confirmed permission grants from install
     confirmed_grants: HashMap<String, Vec<PermissionItem>>,
     staging_root: PathBuf,
+    workspace_path: Option<PathBuf>,
 }
 
 impl Host {
@@ -70,8 +80,14 @@ impl Host {
                     "spacecraft-install-staging-{}",
                     uuid::Uuid::new_v4()
                 )),
+                workspace_path: None,
             }),
         }
+    }
+
+    /// Path where Workspace layout is persisted on stop / restore.
+    pub fn set_workspace_path(&self, path: PathBuf) {
+        self.inner.lock().expect("host").workspace_path = Some(path);
     }
 
     pub fn start(self: &Arc<Self>) {
@@ -108,6 +124,16 @@ impl Host {
             return;
         }
 
+        Self::prune_locked(&self.platform, &mut state);
+        if let Some(path) = state.workspace_path.clone() {
+            let snapshot = Self::capture_workspace_locked(&self.platform, &state);
+            drop(state);
+            if let Err(e) = snapshot.save_to_path(&path) {
+                eprintln!("spacecraft: workspace save failed: {e}");
+            }
+            state = self.inner.lock().expect("host");
+        }
+
         self.platform.unregister_all_shortcuts();
         Self::prune_locked(&self.platform, &mut state);
 
@@ -120,8 +146,8 @@ impl Host {
         for id in state.blanks.drain(..) {
             self.platform.close_window(&id);
         }
-        for (id, _) in state.plugin_windows.drain(..) {
-            self.platform.close_window(&id);
+        for entry in state.plugin_windows.drain(..) {
+            self.platform.close_window(&entry.id);
         }
         for (_, (sidecar_id, mut child)) in state.sidecars.drain() {
             let _ = child.kill();
@@ -335,44 +361,14 @@ impl Host {
     }
 
     pub fn open_plugin(&self, id: &str) -> Result<(), String> {
-        let mut state = self.inner.lock().expect("host");
-        Self::prune_locked(&self.platform, &mut state);
-        let Some(manifest) = state.plugins.get(id).cloned() else {
-            return Err(format!("unknown Plugin: {id}"));
-        };
-        let plugin_id = manifest.id.clone();
-
-        if manifest.is_privileged() {
-            if !state.sidecars.contains_key(&plugin_id) {
-                let binary = resolve_sidecar_binary(&manifest)?;
-                let sidecar_id = self.platform.spawn_sidecar(&plugin_id);
-                let sidecar_proxy = self.bus.proxy(
-                    plugin_id.clone(),
-                    manifest.permissions.clone(),
-                    manifest.contracts.clone(),
-                );
-                drop(state);
-                let child = sidecar_bridge::spawn_and_attach(&binary, sidecar_proxy)
-                    .map_err(|e| {
-                        self.platform.stop_sidecar(&sidecar_id);
-                        e
-                    })?;
-                state = self.inner.lock().expect("host");
-                state.sidecars.insert(plugin_id.clone(), (sidecar_id, child));
+        {
+            let state = self.inner.lock().expect("host");
+            if !state.plugins.contains_key(id) {
+                return Err(format!("unknown Plugin: {id}"));
             }
         }
-
-        let ui_entry = manifest.ui_entry_path();
-        let window = self
-            .platform
-            .create_pure_ui_window(&plugin_id, &ui_entry);
-        state.plugin_windows.push((
-            window,
-            WindowKind::PureUi {
-                plugin_id: plugin_id.clone(),
-            },
-        ));
-        Ok(())
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        self.open_plugin_instance(id, &instance_id, None)
     }
 
     pub fn sidecar_running_for(&self, plugin_id: &str) -> bool {
@@ -390,13 +386,11 @@ impl Host {
     pub fn close_plugin_windows(&self, plugin_id: &str) {
         let mut state = self.inner.lock().expect("host");
         let mut kept = Vec::new();
-        for (id, kind) in state.plugin_windows.drain(..) {
-            let matches =
-                matches!(&kind, WindowKind::PureUi { plugin_id: pid } if pid == plugin_id);
-            if matches {
-                self.platform.close_window(&id);
+        for entry in state.plugin_windows.drain(..) {
+            if entry.plugin_id == plugin_id {
+                self.platform.close_window(&entry.id);
             } else {
-                kept.push((id, kind));
+                kept.push(entry);
             }
         }
         state.plugin_windows = kept;
@@ -406,13 +400,12 @@ impl Host {
     /// Resolve Plugin id from a window label (`plugin-{id}-{n}`).
     pub fn plugin_id_for_window_label(&self, label: &str) -> Option<String> {
         let state = self.inner.lock().expect("host");
-        state.plugin_windows.iter().find_map(|(id, kind)| {
-            if id.0 == label {
-                if let WindowKind::PureUi { plugin_id } = kind {
-                    return Some(plugin_id.clone());
-                }
+        state.plugin_windows.iter().find_map(|entry| {
+            if entry.id.0 == label {
+                Some(entry.plugin_id.clone())
+            } else {
+                None
             }
-            None
         })
     }
 
@@ -509,10 +502,188 @@ impl Host {
         for id in &state.blanks {
             result.push((id.0.clone(), WindowKind::Blank));
         }
-        for (id, kind) in &state.plugin_windows {
-            result.push((id.0.clone(), kind.clone()));
+        for entry in &state.plugin_windows {
+            result.push((
+                entry.id.0.clone(),
+                WindowKind::PureUi {
+                    plugin_id: entry.plugin_id.clone(),
+                },
+            ));
         }
         result
+    }
+
+    /// Current Workspace snapshot (layout + Plugin instance ids only).
+    pub fn capture_workspace(&self) -> Workspace {
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+        Self::capture_workspace_locked(&self.platform, &state)
+    }
+
+    fn capture_workspace_locked(platform: &Arc<dyn Platform>, state: &HostState) -> Workspace {
+        let mut windows = Vec::new();
+        for id in &state.blanks {
+            if let Some(geometry) = platform.window_geometry(id) {
+                windows.push(WorkspaceWindow {
+                    kind: WorkspaceWindowKind::Blank,
+                    geometry,
+                });
+            }
+        }
+        for entry in &state.plugin_windows {
+            if let Some(geometry) = platform.window_geometry(&entry.id) {
+                windows.push(WorkspaceWindow {
+                    kind: WorkspaceWindowKind::Plugin {
+                        plugin_id: entry.plugin_id.clone(),
+                        instance_id: entry.instance_id.clone(),
+                    },
+                    geometry,
+                });
+            }
+        }
+        Workspace { windows }
+    }
+
+    pub fn save_workspace(&self) -> Result<(), String> {
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+        let path = state
+            .workspace_path
+            .clone()
+            .ok_or_else(|| "workspace path is not configured".to_string())?;
+        let snapshot = Self::capture_workspace_locked(&self.platform, &state);
+        drop(state);
+        snapshot.save_to_path(&path)
+    }
+
+    /// Restore last Workspace. Corrupt/missing data is ignored; Host keeps running.
+    pub fn restore_workspace(&self) -> Result<(), String> {
+        let path = {
+            let state = self.inner.lock().expect("host");
+            state
+                .workspace_path
+                .clone()
+                .ok_or_else(|| "workspace path is not configured".to_string())?
+        };
+        let Some(workspace) = Workspace::load_from_path(&path)? else {
+            return Ok(());
+        };
+        self.apply_workspace(workspace)
+    }
+
+    fn apply_workspace(&self, workspace: Workspace) -> Result<(), String> {
+        // Replace content windows so restore matches the last snapshot (not append).
+        {
+            let mut state = self.inner.lock().expect("host");
+            for id in state.blanks.drain(..) {
+                self.platform.close_window(&id);
+            }
+            for entry in state.plugin_windows.drain(..) {
+                self.platform.close_window(&entry.id);
+            }
+            let sidecar_plugins: Vec<String> = state.sidecars.keys().cloned().collect();
+            for plugin_id in sidecar_plugins {
+                Self::stop_sidecar_locked(&self.platform, &mut state, &plugin_id);
+            }
+        }
+
+        for window in workspace.windows {
+            match window.kind {
+                WorkspaceWindowKind::Blank => {
+                    let id = self.platform.create_window(WindowKind::Blank);
+                    self.platform.set_window_geometry(&id, &window.geometry);
+                    let mut state = self.inner.lock().expect("host");
+                    state.blanks.push(id);
+                }
+                WorkspaceWindowKind::Plugin {
+                    plugin_id,
+                    instance_id,
+                } => {
+                    // Partial Workspace: skip windows that cannot reopen; boot continues.
+                    let _ = self.open_plugin_instance(
+                        &plugin_id,
+                        &instance_id,
+                        Some(window.geometry),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn open_plugin_instance(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        geometry: Option<WindowGeometry>,
+    ) -> Result<(), String> {
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+        let Some(manifest) = state.plugins.get(plugin_id).cloned() else {
+            // Missing Plugin after restore — skip gracefully.
+            return Ok(());
+        };
+
+        if manifest.is_privileged() && !state.sidecars.contains_key(plugin_id) {
+            let binary = resolve_sidecar_binary(&manifest)?;
+            let sidecar_id = self.platform.spawn_sidecar(plugin_id);
+            let sidecar_proxy = self.bus.proxy(
+                plugin_id.to_string(),
+                manifest.permissions.clone(),
+                manifest.contracts.clone(),
+            );
+            drop(state);
+            let child = sidecar_bridge::spawn_and_attach(&binary, sidecar_proxy).map_err(|e| {
+                self.platform.stop_sidecar(&sidecar_id);
+                e
+            })?;
+            state = self.inner.lock().expect("host");
+            state
+                .sidecars
+                .insert(plugin_id.to_string(), (sidecar_id, child));
+        }
+
+        let ui_entry = manifest.ui_entry_path();
+        let window = self
+            .platform
+            .create_pure_ui_window(plugin_id, instance_id, &ui_entry);
+        if let Some(geometry) = geometry {
+            self.platform.set_window_geometry(&window, &geometry);
+        }
+        state.plugin_windows.push(PluginWindowEntry {
+            id: window,
+            plugin_id: plugin_id.to_string(),
+            instance_id: instance_id.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Plugin instance identities currently open (plugin_id, instance_id).
+    pub fn plugin_instance_ids(&self) -> Vec<(String, String)> {
+        let mut state = self.inner.lock().expect("host");
+        Self::prune_locked(&self.platform, &mut state);
+        state
+            .plugin_windows
+            .iter()
+            .map(|e| (e.plugin_id.clone(), e.instance_id.clone()))
+            .collect()
+    }
+
+    /// Workspace instance id for a Plugin window label (identity pointer for Plugin-owned state).
+    pub fn instance_id_for_window_label(&self, label: &str) -> Option<String> {
+        let state = self.inner.lock().expect("host");
+        state.plugin_windows.iter().find_map(|entry| {
+            if entry.id.0 == label {
+                Some(entry.instance_id.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn set_window_geometry_for_label(&self, label: &str, geometry: WindowGeometry) {
+        self.platform
+            .set_window_geometry(&WindowId(label.to_string()), &geometry);
     }
 
     fn prune_locked(platform: &Arc<dyn Platform>, state: &mut HostState) {
@@ -535,16 +706,13 @@ impl Host {
             .retain(|id| !platform.is_window_destroyed(id));
         state
             .plugin_windows
-            .retain(|(id, _)| !platform.is_window_destroyed(id));
+            .retain(|entry| !platform.is_window_destroyed(&entry.id));
 
         // Stop Sidecars whose Plugin windows are all gone.
         let active: std::collections::HashSet<String> = state
             .plugin_windows
             .iter()
-            .filter_map(|(_, kind)| match kind {
-                WindowKind::PureUi { plugin_id } => Some(plugin_id.clone()),
-                _ => None,
-            })
+            .map(|entry| entry.plugin_id.clone())
             .collect();
         let orphaned: Vec<String> = state
             .sidecars
@@ -1141,5 +1309,196 @@ mod tests {
             manifest.signature.as_deref(),
             Some("reserved-not-verified")
         );
+    }
+
+    fn workspace_temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "spacecraft-workspace-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn stop_saves_open_window_layout_and_plugin_instance_ids() {
+        let path = workspace_temp_path();
+        let _ = fs::remove_file(&path);
+
+        let (host, _) = boot();
+        host.set_workspace_path(path.clone());
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_blank_window();
+        host.open_plugin("hello").expect("open hello");
+
+        let before = host.plugin_instance_ids();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].0, "hello");
+
+        let hello_label = host
+            .open_windows()
+            .into_iter()
+            .find_map(|(id, k)| match k {
+                WindowKind::PureUi { plugin_id } if plugin_id == "hello" => Some(id),
+                _ => None,
+            })
+            .expect("hello window");
+        host.set_window_geometry_for_label(
+            &hello_label,
+            WindowGeometry {
+                x: 120.0,
+                y: 140.0,
+                width: 640.0,
+                height: 480.0,
+            },
+        );
+
+        host.stop();
+        assert!(path.is_file());
+
+        let saved = Workspace::load_from_path(&path)
+            .expect("load")
+            .expect("workspace present");
+        assert!(saved.windows.iter().any(|w| {
+            matches!(
+                &w.kind,
+                WorkspaceWindowKind::Blank
+            )
+        }));
+        let plugin = saved
+            .windows
+            .iter()
+            .find_map(|w| match &w.kind {
+                WorkspaceWindowKind::Plugin {
+                    plugin_id,
+                    instance_id,
+                } if plugin_id == "hello" => Some((instance_id.clone(), w.geometry)),
+                _ => None,
+            })
+            .expect("hello in workspace");
+        assert_eq!(plugin.0, before[0].1);
+        assert_eq!(
+            plugin.1,
+            WindowGeometry {
+                x: 120.0,
+                y: 140.0,
+                width: 640.0,
+                height: 480.0,
+            }
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restore_reopens_plugins_with_prior_geometry_and_instance_ids() {
+        let path = workspace_temp_path();
+        let _ = fs::remove_file(&path);
+
+        let (host, _) = boot();
+        host.set_workspace_path(path.clone());
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("hello").expect("open hello");
+        let instances = host.plugin_instance_ids();
+        let instance_id = instances[0].1.clone();
+        let hello_label = host
+            .open_windows()
+            .into_iter()
+            .find_map(|(id, k)| match k {
+                WindowKind::PureUi { plugin_id } if plugin_id == "hello" => Some(id),
+                _ => None,
+            })
+            .expect("hello window");
+        let geometry = WindowGeometry {
+            x: 200.0,
+            y: 220.0,
+            width: 900.0,
+            height: 700.0,
+        };
+        host.set_window_geometry_for_label(&hello_label, geometry);
+        host.save_workspace().expect("save");
+        host.stop();
+
+        let (host2, platform2) = boot();
+        host2.set_workspace_path(path.clone());
+        host2.load_plugins_from(&fixture_plugins_dir());
+        host2.restore_workspace().expect("restore");
+
+        assert_eq!(host2.plugin_instance_ids(), vec![("hello".into(), instance_id.clone())]);
+        let restored_label = host2
+            .open_windows()
+            .into_iter()
+            .find_map(|(id, k)| match k {
+                WindowKind::PureUi { plugin_id } if plugin_id == "hello" => Some(id),
+                _ => None,
+            })
+            .expect("restored hello");
+        assert_eq!(
+            platform2.window_geometry(&WindowId(restored_label.clone())),
+            Some(geometry)
+        );
+        assert_eq!(
+            platform2.instance_id_for(&WindowId(restored_label.clone())),
+            Some(instance_id.clone())
+        );
+        assert_eq!(
+            host2.instance_id_for_window_label(&restored_label),
+            Some(instance_id)
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn workspace_snapshot_does_not_include_plugin_business_state() {
+        let (host, _) = boot();
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.open_plugin("hello").expect("open hello");
+        let snapshot = host.capture_workspace();
+        let raw = serde_json::to_value(&snapshot).expect("json");
+        let obj = raw.as_object().expect("object");
+        assert_eq!(obj.keys().collect::<Vec<_>>(), vec!["windows"]);
+        for window in raw["windows"].as_array().expect("windows") {
+            let keys: Vec<_> = window.as_object().expect("window").keys().cloned().collect();
+            assert!(keys.contains(&"kind".to_string()));
+            assert!(keys.contains(&"geometry".to_string()));
+            assert_eq!(keys.len(), 2);
+            let kind = &window["kind"];
+            match kind["type"].as_str() {
+                Some("blank") => {
+                    assert_eq!(kind.as_object().expect("kind").len(), 1);
+                }
+                Some("plugin") => {
+                    let kind_keys: Vec<_> =
+                        kind.as_object().expect("kind").keys().cloned().collect();
+                    assert!(kind_keys.contains(&"type".to_string()));
+                    assert!(kind_keys.contains(&"pluginId".to_string()));
+                    assert!(kind_keys.contains(&"instanceId".to_string()));
+                    assert_eq!(kind_keys.len(), 3);
+                }
+                other => panic!("unexpected kind {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_workspace_still_allows_host_boot() {
+        let path = workspace_temp_path();
+        fs::write(&path, "{ this is not valid workspace json").expect("write corrupt");
+
+        let (host, _) = boot();
+        host.set_workspace_path(path.clone());
+        host.load_plugins_from(&fixture_plugins_dir());
+        host.restore_workspace().expect("restore soft-fails");
+        assert!(host.is_running());
+        assert!(host.is_tray_visible());
+        assert!(host.open_windows().is_empty());
+        // Host can still open Plugins after a bad Workspace file.
+        host.open_plugin("hello").expect("open hello");
+        assert!(host
+            .open_windows()
+            .iter()
+            .any(|(_, k)| matches!(k, WindowKind::PureUi { plugin_id } if plugin_id == "hello")));
+        let _ = fs::remove_file(&path);
     }
 }
